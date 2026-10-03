@@ -35,6 +35,7 @@
     "src/cli.mjs",
     "src/desktop/app-tools-client.mjs",
     "src/desktop/app-tools-endpoint.mjs",
+    "src/desktop/completion-notifier.mjs",
     "src/desktop/config.mjs",
     "src/desktop/desktop-dispatcher.mjs",
     "src/desktop/desktop-presentation.mjs",

@@ -19,6 +19,13 @@ bot-only.
 
 ## App setup
 
+Interactive progress cards update the bot's own sent card through the message
+update API. If your app reports a missing update permission, grant the
+application-identity `im:message:update` scope and make it effective before
+using progress updates. This is separate from permission to read chat history
+or act as the user. A final-card send alone does not establish that progress
+updates are available.
+
 In the app configuration:
 
 1. Enable the bot capability.

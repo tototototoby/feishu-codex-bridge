@@ -20,6 +20,7 @@ function definitionFor(key) {
   if (typeof definition.appId !== 'string' || !APP_ID_RE.test(definition.appId)) throw new Error('assistant app binding is invalid');
   if (typeof definition.intendedUserEmail !== 'string' || !definition.intendedUserEmail.trim()) throw new Error('assistant person binding is missing');
   if (typeof definition.expectedTenantKey !== 'string' || !definition.expectedTenantKey.trim()) throw new Error('assistant tenant binding is missing');
+  if (definition.messageReply != null && !['card', 'markdown', 'text'].includes(definition.messageReply)) throw new Error('invalid assistant reply format');
   return { key: safeKey, definition, directory, profile };
 }
 
@@ -46,6 +47,7 @@ export function expectedAssistantPaths(key) {
     visibility: spec.definition.visibility && typeof spec.definition.visibility === 'object' ? spec.definition.visibility : null,
     model: spec.definition.model || 'gpt-6.1-sol',
     reasoningEffort: spec.definition.reasoningEffort || 'high',
+    messageReply: spec.definition.messageReply || null,
     assistantDir,
     assistantFile: join(assistantDir, 'assistant.json'),
     bridgeHome,
@@ -187,6 +189,12 @@ export function enforceOfficeProfilePolicy(profileConfig, { profile, rootDir, co
   if (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel)) throw new Error('Codex binary cannot be inside an assistant data directory');
 
   profileConfig.mode = 'personal';
+  const existingReply = profileConfig.preferences?.messageReply;
+  const keepsExistingReply = !assistant.messageReply && ['card', 'markdown', 'text'].includes(existingReply);
+  const messageReply = assistant.messageReply || (keepsExistingReply ? existingReply : 'card');
+  profileConfig.preferences ??= {};
+  profileConfig.preferences.messageReply = messageReply;
+  if (!keepsExistingReply) profileConfig.preferences.messageReplyMigrated = true;
   profileConfig.access = {
     ...profileConfig.access,
     allowedUsers: [assistant.allowedOpenId],

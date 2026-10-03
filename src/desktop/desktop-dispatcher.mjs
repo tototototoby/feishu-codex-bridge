@@ -3,6 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { DesktopPresentation } from "./desktop-presentation.mjs";
+import { sendCompletionNoticeOnce } from "./completion-notifier.mjs";
 import { discoverAppToolsEndpoint } from "./app-tools-endpoint.mjs";
 import {
   configuredDesktopChatId,
@@ -86,6 +87,8 @@ export class DesktopDispatcher {
     this.sendTail = Promise.resolve();
     this.monitorTask = null;
     this.monitorTimer = null;
+    this.completionNoticeTimers = new Map();
+    this.completionNoticeRetryCounts = new Map();
     this.closed = false;
     this.stateReady = false;
     this.stateError = null;
@@ -100,6 +103,7 @@ export class DesktopDispatcher {
       if (this.controlError === "desktop-disabled") return;
       await this.loadState();
       await this.resumePendingPresentations();
+      await this.resumePendingCompletionNotices();
       if ([...this.requests.values()].some((request) => MONITOR_STATUSES.has(request.status))) {
         this.startMonitor();
       }
@@ -109,6 +113,9 @@ export class DesktopDispatcher {
 
   setChannel(channel) {
     this.channel = channel;
+    if (this.stateReady && !this.closed) {
+      void this.resumePendingCompletionNotices().catch((error) => this.reportError("completion-notice", classifyError(error)));
+    }
   }
 
   pendingCount() {
@@ -229,6 +236,7 @@ export class DesktopDispatcher {
         pipePath,
         serverPath,
         nodePath: configuredNodePath(),
+        notifyCompletion: !groupScope && this.scope === configuredDesktopChatId() && raw?.notifyCompletion === true,
       };
       if (this.control.threadId !== expectedThreadId || !this.control.nodePath) {
         this.controlError = "invalid-control";
@@ -260,6 +268,7 @@ export class DesktopDispatcher {
         if (request.status === "reply_sending") request.status = request.finalAnswer && request.presentationMessageId && request.deliveryMode === "normal-card-patch"
           ? "reply_retry_pending" : "reply_uncertain";
         if (request.status === "notice_sending") request.status = "notice_uncertain";
+        if (request.completionNoticeState === "sending") request.completionNoticeState = "uncertain";
         if (request.status === "sending" || request.status === "preparing") {
           request.status = "delivery_uncertain";
         }
@@ -321,6 +330,8 @@ export class DesktopDispatcher {
       requestId: randomUUID(),
       messageId,
       replyInThread: Boolean(msg.threadId),
+      completionNoticeEligible: this.control?.notifyCompletion === true,
+      completionNoticeState: null,
       status: "preparing",
       createdAt: Date.now(),
       acceptedAt: null,
@@ -743,7 +754,67 @@ export class DesktopDispatcher {
       request.errorCode = classifyError(error);
       this.reportError("lark-reply", request.errorCode, request.requestId);
     }
+    if (request.status === "replied" && request.finalMediaHandled && this.isCompletionNoticeEnabled(request) && !request.completionNoticeState) {
+      request.completionNoticeState = "pending";
+    }
     await this.persist();
+    if (request.status === "replied" && request.finalMediaHandled && request.completionNoticeState === "pending") {
+      await this.deliverCompletionNotice(request);
+    }
+  }
+
+  isCompletionNoticeEnabled(request) {
+    return request?.completionNoticeEligible === true &&
+      this.scope === configuredDesktopChatId() &&
+      this.control?.notifyCompletion === true;
+  }
+
+  async resumePendingCompletionNotices() {
+    for (const request of this.requests.values()) {
+      if (this.closed) return;
+      if (request.status !== "replied" || !request.finalMediaHandled || request.completionNoticeState !== "pending" || !this.isCompletionNoticeEnabled(request)) continue;
+      await this.deliverCompletionNotice(request);
+    }
+  }
+
+  async deliverCompletionNotice(request) {
+    if (this.closed || request.status !== "replied" || !request.finalMediaHandled || !this.isCompletionNoticeEnabled(request)) return;
+    const result = await sendCompletionNoticeOnce({
+      request,
+      channel: this.channel,
+      chatId: this.scope,
+      persist: () => this.persist(),
+    });
+    if (result.kind === "pre-send") {
+      this.reportError("completion-notice", result.code, request.requestId);
+      if (result.code !== "completion-notice-invalid-request") this.scheduleCompletionNoticeRetry(request);
+    } else if (result.kind === "uncertain") {
+      this.clearCompletionNoticeRetry(request.requestId);
+      this.reportError("completion-notice", "send-uncertain", request.requestId);
+    } else if (result.kind === "sent") {
+      this.clearCompletionNoticeRetry(request.requestId);
+    }
+  }
+
+  scheduleCompletionNoticeRetry(request) {
+    if (this.closed || this.completionNoticeTimers.has(request.requestId)) return;
+    const retries = this.completionNoticeRetryCounts.get(request.requestId) ?? 0;
+    const delays = [5_000, 15_000, 45_000];
+    if (retries >= delays.length) return;
+    this.completionNoticeRetryCounts.set(request.requestId, retries + 1);
+    const timer = setTimeout(() => {
+      this.completionNoticeTimers.delete(request.requestId);
+      void this.deliverCompletionNotice(request).catch((error) => this.reportError("completion-notice", classifyError(error), request.requestId));
+    }, delays[retries]);
+    timer.unref?.();
+    this.completionNoticeTimers.set(request.requestId, timer);
+  }
+
+  clearCompletionNoticeRetry(requestId) {
+    const timer = this.completionNoticeTimers.get(requestId);
+    if (timer) clearTimeout(timer);
+    this.completionNoticeTimers.delete(requestId);
+    this.completionNoticeRetryCounts.delete(requestId);
   }
 
   async sendNotice(request, channel, content, finalStatus = "failed_notified") {
@@ -850,6 +921,8 @@ export class DesktopDispatcher {
     this.closed = true;
     if (this.monitorTimer) clearTimeout(this.monitorTimer);
     this.monitorTimer = null;
+    for (const timer of this.completionNoticeTimers.values()) clearTimeout(timer);
+    this.completionNoticeTimers.clear();
     await this.client?.close().catch((error) => {
       this.reportError("client-close", classifyError(error));
     });
@@ -896,6 +969,13 @@ function normalizeRequest(input) {
     requestId,
     messageId,
     replyInThread: input.replyInThread === true,
+    completionNoticeEligible: input.completionNoticeEligible === true,
+    completionNoticeState: normalizeCompletionNoticeState(input.completionNoticeState),
+    completionNoticeUuid: nonEmptyString(input.completionNoticeUuid),
+    completionNoticeAttemptedAt: Number.isFinite(input.completionNoticeAttemptedAt) ? input.completionNoticeAttemptedAt : null,
+    completionNoticeMessageId: nonEmptyString(input.completionNoticeMessageId),
+    completionNoticeSentAt: Number.isFinite(input.completionNoticeSentAt) ? input.completionNoticeSentAt : null,
+    completionNoticeError: nonEmptyString(input.completionNoticeError),
     status: nonEmptyString(input.status) ?? "delivery_uncertain",
     createdAt: Number.isFinite(input.createdAt) ? input.createdAt : Date.now(),
     acceptedAt: Number.isFinite(input.acceptedAt) ? input.acceptedAt : null,
@@ -928,6 +1008,13 @@ function serializableRequest(request) {
     requestId: request.requestId,
     messageId: request.messageId,
     replyInThread: request.replyInThread,
+    completionNoticeEligible: request.completionNoticeEligible,
+    completionNoticeState: request.completionNoticeState,
+    completionNoticeUuid: request.completionNoticeUuid,
+    completionNoticeAttemptedAt: request.completionNoticeAttemptedAt,
+    completionNoticeMessageId: request.completionNoticeMessageId,
+    completionNoticeSentAt: request.completionNoticeSentAt,
+    completionNoticeError: request.completionNoticeError,
     status: request.status,
     createdAt: request.createdAt,
     acceptedAt: request.acceptedAt,
@@ -953,6 +1040,10 @@ function serializableRequest(request) {
     replyAttempts: request.replyAttempts,
     replyRetryAt: request.replyRetryAt,
   };
+}
+
+function normalizeCompletionNoticeState(value) {
+  return ["pending", "sending", "sent", "uncertain"].includes(value) ? value : null;
 }
 
 function normalizePublicItemMetadata(items) {

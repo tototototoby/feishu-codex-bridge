@@ -1,6 +1,6 @@
 # Windows setup guide
 
-This guide describes the intended `v0.1.0` setup flow. A clean-install,
+This guide describes the intended `v0.1.1` setup flow. A clean-install,
 end-to-end run has not been verified. Use a Feishu/Lark tenant and Codex
 account that you control, and start with a test bot and non-sensitive messages.
 
@@ -67,6 +67,10 @@ the following values are placeholders only:
 
 The key, directory, and profile names may contain letters, numbers, `-`, and
 `_`. Pick a model and reasoning effort available to your own Codex account.
+`messageReply` accepts `card`, `markdown`, or `text`. New office profiles
+default to the interactive `card` presentation when no prior reply format is
+configured. An explicit assistant-level `messageReply` overrides the upstream
+profile preference; existing profile choices are otherwise preserved.
 Do not add the app secret, access tokens, or personal chat identifiers to this
 file in the source checkout; this is the private copy under the data root.
 

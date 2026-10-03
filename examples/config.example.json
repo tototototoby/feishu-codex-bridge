@@ -12,7 +12,8 @@
       "identityVerificationMethod": "oauth-enterprise-email",
       "expectedUserUnionId": null,
       "model": "gpt-6.1-sol",
-      "reasoningEffort": "high"
+      "reasoningEffort": "high",
+      "messageReply": "card"
     }
   },
   "desktop": {
@@ -22,7 +23,8 @@
     "threadId": "",
     "pipePath": "",
     "mode": "steer",
-    "relayCommentary": false
+    "relayCommentary": false,
+    "notifyCompletion": true
   },
   "group": {
     "enabled": false,

@@ -241,7 +241,7 @@ function patchStockSource(source) {
   source = replaceExactlyOnce(
     source,
     "    if (!isComplete(cfg)) throw new Error(`profile \\u914D\\u7F6E\\u4E0D\\u5B8C\\u6574\\uFF1A${profile2}`);\n    for (const m of this.managed.values()) {",
-    "    if (!isComplete(cfg)) throw new Error(`profile \\u914D\\u7F6E\\u4E0D\\u5B8C\\u6574\\uFF1A${profile2}`);\n    if (isOfficeRuntime()) enforceOfficeProfilePolicy(profileConfig, { profile: profile2, rootDir: appPaths2.rootDir, configPath, appId: cfg.accounts?.app?.id }); // OFFICE_PATCH:preflight-policy\n    for (const m of this.managed.values()) {",
+    "    if (!isComplete(cfg)) throw new Error(`profile \\u914D\\u7F6E\\u4E0D\\u5B8C\\u6574\\uFF1A${profile2}`);\n    if (isOfficeRuntime()) { enforceOfficeProfilePolicy(profileConfig, { profile: profile2, rootDir: appPaths2.rootDir, configPath, appId: cfg.accounts?.app?.id }); cfg.preferences = profileConfig.preferences; } // OFFICE_PATCH:preflight-policy\n    for (const m of this.managed.values()) {",
     "preflight-policy",
   );
 

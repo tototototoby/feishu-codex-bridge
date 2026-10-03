@@ -19,6 +19,7 @@
   "userAuthSetupApproved": false,
   "model": "gpt-6.1-sol",
   "reasoningEffort": "high",
+  "messageReply": "card",
   "codexBinaryPath": null,
   "workspace": "",
   "bridgeHome": "",

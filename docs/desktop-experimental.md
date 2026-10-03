@@ -54,6 +54,23 @@ that the desktop component is compatible or that a message will be delivered.
 
 ## Data and limits
 
+### Completion notifications (v0.1.1)
+
+Set `desktop.notifyCompletion` to `true` in your private project config to
+receive a separate short text message after a linked direct-chat request has
+its final card confirmed and its final-media handler completed. The message
+includes a documented link to open the same chat. This creates a new chat
+message rather than only editing the existing card; notification banners and
+sounds still follow your Feishu and operating-system notification settings.
+
+The option is explicit in the new example config and disabled when absent.
+It applies to newly accepted direct-chat requests; it does not notify groups
+or replay old completed requests. Sending intent and receipts are persisted.
+An ambiguous send result is marked uncertain and is not automatically sent
+again. This avoids duplicate reminders at the cost of a possible missed
+reminder if the network outcome is unknown. A notice failure does not rerun
+the model or replace its successful final answer.
+
 Large-image resizing is optional and requires an installed `sharp` module.
 Install it locally without changing the release lockfile with
 `npm install --no-save --package-lock=false sharp`, or set `tools.sharp` to the

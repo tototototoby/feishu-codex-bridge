@@ -6,7 +6,7 @@ A Windows-first Feishu/Lark assistant bridge. It uses a bot application you
 control to route direct-message requests to locally configured assistant
 profiles and reply as the bot.
 
-> **Initial experimental release: v0.1.0.** This is a public source
+> **Initial experimental release: v0.1.1.** This is a public source
 > extraction. A clean end-to-end installation and run have not been verified.
 > Do not treat this as a high-availability service; exactly-once execution,
 > exactly-once delivery, and long-term compatibility are not promised.
@@ -34,6 +34,13 @@ When Desktop or visibility features are enabled, selected content can also be
 sent as prompts to a configured thread. Do not treat that as local-only logging.
 
 ## Requirements
+
+Version 0.1.1 adds interactive card replies as the default for newly configured
+office profiles and opt-in `desktop.notifyCompletion` notices. Completion
+notices are separate direct-chat messages with durable sending/receipt state;
+they do not replay historical requests or notify groups. See
+[Desktop details](docs/desktop-experimental.md) for delivery uncertainty and
+client notification settings.
 
 - Windows 10 or 11
 - Node.js `22.13.0` or newer and npm

@@ -8,7 +8,8 @@
     "threadId": "replace_with_the_codex_desktop_thread_id",
     "pipePath": "",
     "mode": "steer",
-    "relayCommentary": false
+    "relayCommentary": false,
+    "notifyCompletion": true
   },
   "group": {
     "enabled": false,

@@ -2,7 +2,7 @@
 
 The original Feishu Codex Bridge source in this repository is licensed under
 the MIT License in [`LICENSE`](LICENSE). This file records the upstream source
-and runtime packages observed for the v0.1.0 source snapshot. Full license
+and runtime packages for the v0.1.x releases, observed from the original v0.1.0 source snapshot. Full license
 texts copied from the corresponding installed package files are in
 [`licenses/`](licenses/), and the package-level inventory is recorded in
 [`licenses/manifest.spdx.json`](licenses/manifest.spdx.json).
