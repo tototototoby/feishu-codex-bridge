@@ -6,7 +6,7 @@ A Windows-first Feishu/Lark assistant bridge. It uses a bot application you
 control to route direct-message requests to locally configured assistant
 profiles and reply as the bot.
 
-> **Initial experimental release: v0.1.1.** This is a public source
+> **Initial experimental release: v0.1.2.** This is a public source
 > extraction. A clean end-to-end installation and run have not been verified.
 > Do not treat this as a high-availability service; exactly-once execution,
 > exactly-once delivery, and long-term compatibility are not promised.
@@ -34,6 +34,12 @@ When Desktop or visibility features are enabled, selected content can also be
 sent as prompts to a configured thread. Do not treat that as local-only logging.
 
 ## Requirements
+
+Version 0.1.2 replaces office lazy cards with an immediate regular progress
+card, a truthful 10-second elapsed heartbeat, event-level public updates and
+a same-card terminal result. The independent CLI emits complete message/tool
+events; this does not promise token-level streaming or incoming-message
+steering.
 
 Version 0.1.1 adds interactive card replies as the default for newly configured
 office profiles and opt-in `desktop.notifyCompletion` notices. Completion

@@ -131,11 +131,13 @@ function rewriteBareStaticImports(source, stockRequire) {
 function patchStockSource(source) {
   const officePolicyUrl = JSON.stringify(new URL("./office-policy.mjs", import.meta.url).href);
   const officeVisibilityUrl = JSON.stringify(new URL("./office-visibility.mjs", import.meta.url).href);
+  const officeRealtimeUrl = JSON.stringify(new URL("./office-realtime.mjs", import.meta.url).href);
   const officeRecoveryUrl = JSON.stringify(new URL("./office-recovery.mjs", import.meta.url).href);
   source = replaceExactlyOnce(
     source,
     "// src/cli/index.ts\nimport { Command } from \"commander\";",
-    `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET}:policy-import\nimport { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess } from ${officePolicyUrl};\nimport { beginOfficeVisibilityRun, finishOfficeVisibilityRun, syncOfficeVisibilityEvent } from ${officeVisibilityUrl}; // OFFICE_PATCH:visibility-import\nimport { claimOfficeMessage, recoverOfficeMessages } from ${officeRecoveryUrl}; // OFFICE_PATCH:recovery-import\nimport { Command } from "commander";`,
+    `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET}:policy-import\nimport { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess } from ${officePolicyUrl};\nimport { beginOfficeVisibilityRun, finishOfficeVisibilityRun, syncOfficeVisibilityEvent } from ${officeVisibilityUrl}; // OFFICE_PATCH:visibility-import
+import { beginOfficeRealtimeRun, finishOfficeRealtimeRun, updateOfficeRealtimeRun } from ${officeRealtimeUrl}; // OFFICE_PATCH:realtime-import\nimport { claimOfficeMessage, recoverOfficeMessages } from ${officeRecoveryUrl}; // OFFICE_PATCH:recovery-import\nimport { Command } from "commander";`,
     "policy-import",
   );
 
@@ -277,6 +279,18 @@ function patchStockSource(source) {
   );
   source = replaceExactlyOnce(
     source,
+    "  const replyMode = getMessageReplyMode(controls.cfg);\n  log.info(\"flush\", \"reply-mode\", { mode: replyMode });",
+    "  const replyMode = getMessageReplyMode(controls.cfg);\n  if (isOfficeRuntime() && controls.profileConfig.agentKind === \"codex\" && replyMode === \"card\") {\n    try {\n      const officeAssistant = loadOfficeAssistantFromProcess({ requireReady: true });\n      beginOfficeRealtimeRun({ scope, runId: execution.runId, channel, chatId, sourceMessageId: lastMsg.messageId, replyInThread: sendOpts.replyInThread === true, bridgeHome: officeAssistant.bridgeHome, notifyCompletion: officeAssistant.notifyCompletion === true, onEvent: (event) => log.info(\"office-realtime-card\", event.kind, { runId: execution.runId, phase: event.phase, code: event.code, status: event.status, apiCode: event.apiCode, terminal: event.terminal, fallback: event.fallback }) });\n    } catch {}\n  } // OFFICE_PATCH:realtime-run-start\n  log.info(\"flush\", \"reply-mode\", { mode: replyMode });",
+    "realtime-run-start",
+  );
+  source = replaceExactlyOnce(
+    source,
+    "  const reactionPromise = cotEnabled || replyMode === \"card\" ? void 0 : addWorkingReaction(channel, lastMsg.messageId);\n  try {\n    if (cotEnabled) {",
+    "  const reactionPromise = cotEnabled || replyMode === \"card\" ? void 0 : addWorkingReaction(channel, lastMsg.messageId);\n  try {\n    if (isOfficeRuntime() && controls.profileConfig.agentKind === \"codex\" && replyMode === \"card\") {\n      let finalState;\n      try {\n        finalState = await processAgentStream(handle2, eventStream, scope, idleTimeoutMs, recordSession, async (state) => { updateOfficeRealtimeRun(scope, execution.runId, filterForPrefs(state)); });\n      } catch {\n        finalState = { blocks: [], terminal: \"error\" };\n      }\n      const officeResult = await finishOfficeRealtimeRun(scope, execution.runId, finalState);\n      if (officeResult.kind !== \"stale\" && (officeResult.kind !== \"unavailable\" || officeResult.finalDelivery)) finishOfficeVisibilityRun(scope, officeResult.content); // OFFICE_PATCH:realtime-visibility-final\n      if (officeResult.fallback && officeResult.content) {\n        await sendFinalReply({\n          channel,\n          chatId,\n          scope,\n          state: { blocks: [{ kind: \"text\", content: officeResult.content, streaming: false }], reasoning: { content: \"\", active: false }, footer: null, terminal: \"done\" },\n          replyMode,\n          sendOpts,\n          cardRenderOptions\n        });\n      }\n      return;\n    } // OFFICE_PATCH:realtime-card\n    if (cotEnabled) {",
+    "realtime-card",
+  );
+  source = replaceExactlyOnce(
+    source,
     "async function sendFinalReply(input) {\n  const body = renderText(input.state);",
     "async function sendFinalReply(input) {\n  const body = renderText(input.state);\n  if (isOfficeRuntime()) finishOfficeVisibilityRun(input.scope, body); // OFFICE_PATCH:visibility-final",
     "visibility-final",
@@ -333,6 +347,10 @@ async function buildExpectedOfficeCli() {
     "OFFICE_PATCH:visibility-run-start",
     "OFFICE_PATCH:visibility-final",
     "OFFICE_PATCH:visibility-final-cleanup",
+    "OFFICE_PATCH:realtime-import",
+    "OFFICE_PATCH:realtime-run-start",
+    "OFFICE_PATCH:realtime-card",
+    "OFFICE_PATCH:realtime-visibility-final",
     "OFFICE_PATCH:recovery-import",
     "OFFICE_PATCH:inbound-dedup",
     "OFFICE_PATCH:recovery-inbox",

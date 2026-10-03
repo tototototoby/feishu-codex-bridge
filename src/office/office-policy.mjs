@@ -48,6 +48,7 @@ export function expectedAssistantPaths(key) {
     model: spec.definition.model || 'gpt-6.1-sol',
     reasoningEffort: spec.definition.reasoningEffort || 'high',
     messageReply: spec.definition.messageReply || null,
+    notifyCompletion: spec.definition.notifyCompletion !== false,
     assistantDir,
     assistantFile: join(assistantDir, 'assistant.json'),
     bridgeHome,

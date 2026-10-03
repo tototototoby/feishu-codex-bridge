@@ -13,7 +13,8 @@
       "expectedUserUnionId": null,
       "model": "gpt-6.1-sol",
       "reasoningEffort": "high",
-      "messageReply": "card"
+      "messageReply": "card",
+      "notifyCompletion": true
     }
   },
   "desktop": {

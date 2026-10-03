@@ -2,8 +2,8 @@
   "spdxVersion": "SPDX-2.3",
   "dataLicense": "CC0-1.0",
   "SPDXID": "SPDXRef-DOCUMENT",
-  "name": "feishu-codex-bridge-v0.1.1-license-inventory",
-  "documentNamespace": "https://spdx.org/spdxdocs/feishu-codex-bridge-v0.1.1-20261002T233921Z",
+  "name": "feishu-codex-bridge-v0.1.2-license-inventory",
+  "documentNamespace": "https://spdx.org/spdxdocs/feishu-codex-bridge-v0.1.2-20261002T233921Z",
   "creationInfo": {
     "created": "2026-10-03T08:10:06Z",
     "creators": ["Organization: Feishu Codex Bridge contributors"]
@@ -12,7 +12,7 @@
     {
       "name": "feishu-codex-bridge",
       "SPDXID": "SPDXRef-FeishuCodexBridge",
-      "versionInfo": "0.1.1",
+      "versionInfo": "0.1.2",
       "downloadLocation": "https://github.com/tototototoby/feishu-codex-bridge",
       "filesAnalyzed": false,
       "licenseConcluded": "MIT",

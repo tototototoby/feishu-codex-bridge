@@ -6,7 +6,7 @@ import { join, relative, resolve, isAbsolute } from 'node:path';
 import { spawn } from 'node:child_process';
 import { PROJECT_ROOT, DATA_ROOT, CONFIG_PATH, loadProjectConfig, officeRoot, desktopRoot, safeAssistantSegment, toolPath, upstreamRoot, assertPrivateStorage } from './settings.mjs';
 
-const help = `Feishu Codex Bridge v0.1.1 (Windows first)
+const help = `Feishu Codex Bridge v0.1.2 (Windows first)
   init                              Create private local configuration outside the checkout
   assistant init <key>               Create disabled isolated assistant folders from configuration
   doctor                            Inspect local prerequisites; does not send messages
@@ -90,7 +90,7 @@ async function doctor() {
   }
   const cfg = loadProjectConfig();
   console.log(JSON.stringify({
-    version: '0.1.1', platform: process.platform, node: process.versions.node,
+    version: '0.1.2', platform: process.platform, node: process.versions.node,
     dataRoot: DATA_ROOT, configPath: CONFIG_PATH, dependencies: modules,
     assistants: Object.keys(cfg.assistants || {}),
     desktopEnabled: cfg.desktop?.enabled === true,

@@ -52,6 +52,7 @@
     "src/office/office-auth.mjs",
     "src/office/office-entry.mjs",
     "src/office/office-policy.mjs",
+    "src/office/office-realtime.mjs",
     "src/office/office-recovery.mjs",
     "src/office/office-task.ps1",
     "src/office/office-visibility.mjs",

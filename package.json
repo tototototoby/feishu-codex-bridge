@@ -1,6 +1,6 @@
 {
   "name": "feishu-codex-bridge",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Local Feishu assistants, durable replies and experimental Codex Desktop chat integration for Windows",
   "type": "module",
   "license": "MIT",

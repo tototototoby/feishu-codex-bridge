@@ -1,6 +1,6 @@
 # Windows setup guide
 
-This guide describes the intended `v0.1.1` setup flow. A clean-install,
+This guide describes the intended `v0.1.2` setup flow. A clean-install,
 end-to-end run has not been verified. Use a Feishu/Lark tenant and Codex
 account that you control, and start with a test bot and non-sensitive messages.
 
@@ -71,6 +71,29 @@ The key, directory, and profile names may contain letters, numbers, `-`, and
 default to the interactive `card` presentation when no prior reply format is
 configured. An explicit assistant-level `messageReply` overrides the upstream
 profile preference; existing profile choices are otherwise preserved.
+
+From v0.1.2, the Codex/card office path opens one regular progress card when
+the authorized run starts. It refreshes truthful elapsed time every 10 seconds
+while waiting and applies public message/tool-status events to that same card.
+The final answer or terminal status replaces the same card; reasoning and raw
+tool commands/outputs are excluded from the progress view. The CLI emits
+whole message and tool events, so this is event-level progress rather than
+character-by-character generation.
+
+If the progress card cannot be created or its final update is unconfirmed,
+the adapter attempts one independent plain-text final reply. Its separate
+metadata ledger is written before sending; ambiguous sends are not retried.
+An ambiguous final card update can therefore leave the answer visible in both
+the card and the one text reply. If the ledger cannot be written, delivery is
+blocked and recorded in metadata logs. This presentation change does not
+guarantee delivery when the local disk or Feishu API is unavailable.
+
+Assistant-level `notifyCompletion` defaults to true and may be set to false
+to disable the separate terminal notice. Notice state contains only bounded
+run identifiers and sending receipts in private bridge storage; uncertain
+sends are not automatically repeated. Display updates do not add another
+model execution, change the assistant's Codex home, or enable incoming-message
+steering. Incoming work retains the configured upstream queue behavior.
 Do not add the app secret, access tokens, or personal chat identifiers to this
 file in the source checkout; this is the private copy under the data root.
 
