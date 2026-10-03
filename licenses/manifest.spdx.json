@@ -1,0 +1,160 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "feishu-codex-bridge-v0.1.0-license-inventory",
+  "documentNamespace": "https://spdx.org/spdxdocs/feishu-codex-bridge-v0.1.0-20261002T233921Z",
+  "creationInfo": {
+    "created": "2026-10-02T23:39:21Z",
+    "creators": ["Organization: Feishu Codex Bridge contributors"]
+  },
+  "packages": [
+    {
+      "name": "feishu-codex-bridge",
+      "SPDXID": "SPDXRef-FeishuCodexBridge",
+      "versionInfo": "0.1.0",
+      "downloadLocation": "https://github.com/tototototoby/feishu-codex-bridge",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) 2026 Feishu Codex Bridge contributors",
+      "primaryPackagePurpose": "APPLICATION"
+    },
+    {
+      "name": "lark-channel-bridge",
+      "SPDXID": "SPDXRef-LarkChannelBridge",
+      "versionInfo": "0.7.1",
+      "downloadLocation": "https://github.com/zarazhangrui/feishu-claude-code-bridge",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/lark-channel-bridge@0.7.1" }
+      ],
+      "licenseComments": "Source-port baseline. Original package metadata and LICENSE were inspected; the original notice is copied in licenses/lark-channel-bridge-0.7.1.LICENSE.txt."
+    },
+    {
+      "name": "@larksuite/channel",
+      "SPDXID": "SPDXRef-LarkSuiteChannel",
+      "versionInfo": "0.6.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/%40larksuite/channel@0.6.1" }
+      ]
+    },
+    {
+      "name": "@clack/prompts",
+      "SPDXID": "SPDXRef-ClackPrompts",
+      "versionInfo": "1.8.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/%40clack/prompts@1.8.1" }
+      ]
+    },
+    {
+      "name": "commander",
+      "SPDXID": "SPDXRef-Commander",
+      "versionInfo": "12.1.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/commander@12.1.0" }
+      ]
+    },
+    {
+      "name": "cross-spawn",
+      "SPDXID": "SPDXRef-CrossSpawn",
+      "versionInfo": "7.0.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/cross-spawn@7.0.6" }
+      ]
+    },
+    {
+      "name": "graceful-fs",
+      "SPDXID": "SPDXRef-GracefulFS",
+      "versionInfo": "4.2.11",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "ISC",
+      "licenseDeclared": "ISC",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/graceful-fs@4.2.11" }
+      ]
+    },
+    {
+      "name": "proper-lockfile",
+      "SPDXID": "SPDXRef-ProperLockfile",
+      "versionInfo": "4.1.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/proper-lockfile@4.1.2" }
+      ]
+    },
+    {
+      "name": "qrcode-terminal",
+      "SPDXID": "SPDXRef-QRCodeTerminal",
+      "versionInfo": "0.12.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/qrcode-terminal@0.12.0" }
+      ],
+      "licenseComments": "The inspected package.json has no license value. Its copied LICENSE file contains Apache License 2.0 text and an additional MIT notice for the vendored QRCode for JavaScript; consult that file rather than treating the package metadata as a declared SPDX expression."
+    },
+    {
+      "name": "@larksuite/cli",
+      "SPDXID": "SPDXRef-LarkSuiteCLI",
+      "versionInfo": "1.0.96",
+      "downloadLocation": "https://github.com/larksuite/cli",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "externalRefs": [
+        { "referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl", "referenceLocator": "pkg:npm/%40larksuite/cli@1.0.96" }
+      ],
+      "licenseComments": "External runtime command; this repository does not bundle it. Version and license are from the separately installed package metadata inspected for this snapshot."
+    }
+  ],
+  "relationships": [
+    { "spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-FeishuCodexBridge" },
+    { "spdxElementId": "SPDXRef-FeishuCodexBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-LarkChannelBridge" },
+    { "spdxElementId": "SPDXRef-FeishuCodexBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-LarkSuiteChannel" },
+    { "spdxElementId": "SPDXRef-FeishuCodexBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-CrossSpawn" },
+    { "spdxElementId": "SPDXRef-FeishuCodexBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-ProperLockfile" },
+    { "spdxElementId": "SPDXRef-FeishuCodexBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-LarkSuiteCLI", "comment": "External command dependency documented for user installation; not a package.json npm dependency." },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-ClackPrompts" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-LarkSuiteChannel" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Commander" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-CrossSpawn" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-GracefulFS" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-ProperLockfile" },
+    { "spdxElementId": "SPDXRef-LarkChannelBridge", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-QRCodeTerminal" },
+    { "spdxElementId": "SPDXRef-LarkSuiteCLI", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-ClackPrompts" }
+  ]
+}

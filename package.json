@@ -1,0 +1,23 @@
+{
+  "name": "feishu-codex-bridge",
+  "version": "0.1.0",
+  "description": "Local Feishu assistants, durable replies and experimental Codex Desktop chat integration for Windows",
+  "type": "module",
+  "license": "MIT",
+  "private": true,
+  "repository": { "type": "git", "url": "https://github.com/tototototoby/feishu-codex-bridge.git" },
+  "bin": { "feishu-codex": "src/cli.mjs" },
+  "engines": { "node": ">=22.13.0" },
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "doctor": "node src/cli.mjs doctor",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "audit:release": "node scripts/audit-release.mjs"
+  },
+  "dependencies": {
+    "lark-channel-bridge": "0.7.1",
+    "@larksuite/channel": "0.6.1",
+    "cross-spawn": "7.0.6",
+    "proper-lockfile": "4.1.2"
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "tools": {},
+  "assistants": {
+    "assistant-1": {
+      "directory": "assistant-1",
+      "profile": "assistant-1",
+      "displayName": "示例办公助手",
+      "appId": "",
+      "intendedUserEmail": "",
+      "expectedTenantKey": "",
+      "identityVerificationMethod": "oauth-enterprise-email",
+      "expectedUserUnionId": null,
+      "model": "gpt-6.1-sol",
+      "reasoningEffort": "high"
+    }
+  },
+  "desktop": {
+    "enabled": false,
+    "profile": "desktop",
+    "chatId": "",
+    "threadId": "",
+    "pipePath": "",
+    "mode": "steer",
+    "relayCommentary": false
+  },
+  "group": {
+    "enabled": false,
+    "chatId": "",
+    "ownerOpenId": "",
+    "name": "",
+    "threadId": "",
+    "workspace": "",
+    "pipePath": "",
+    "recordHistory": false
+  }
+}

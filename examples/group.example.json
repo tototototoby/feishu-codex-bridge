@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "tools": {},
+  "assistants": {},
+  "desktop": {
+    "enabled": false,
+    "chatId": "",
+    "threadId": "",
+    "pipePath": "",
+    "relayCommentary": false
+  },
+  "group": {
+    "enabled": false,
+    "chatId": "oc_replace_with_your_group_chat_id",
+    "ownerOpenId": "ou_replace_with_the_configured_owner",
+    "ownerName": "",
+    "name": "replace with your group name",
+    "threadId": "replace with a separate Codex Desktop thread id",
+    "pipePath": "",
+    "workspace": "C:\\absolute\\path\\to\\the\\group-workspace",
+    "recordHistory": false
+  }
+}

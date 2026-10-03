@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "tools": {},
+  "assistants": {},
+  "desktop": {
+    "enabled": false,
+    "chatId": "oc_replace_with_your_desktop_link_chat_id",
+    "threadId": "replace_with_the_codex_desktop_thread_id",
+    "pipePath": "",
+    "mode": "steer",
+    "relayCommentary": false
+  },
+  "group": {
+    "enabled": false,
+    "chatId": "",
+    "ownerOpenId": "",
+    "name": "",
+    "ownerName": "",
+    "threadId": "",
+    "pipePath": "",
+    "workspace": "",
+    "recordHistory": false
+  }
+}
