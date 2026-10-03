@@ -4,6 +4,36 @@ This guide describes the intended `v0.1.2` setup flow. A clean-install,
 end-to-end run has not been verified. Use a Feishu/Lark tenant and Codex
 account that you control, and start with a test bot and non-sensitive messages.
 
+## Native Windows execution permissions
+
+Configure the native Windows sandbox in each assistant's private Codex home,
+separately from the Desktop application's home. A workspace permission in the
+bridge does not prove that the installed Codex build resolves the same effective
+sandbox. On an observed native build, an assistant home without a selected
+Windows sandbox resolved to read-only despite requesting workspace-write.
+
+For the supported fallback implementation and authorized online Feishu work,
+the assistant's private `codex/config.toml` can include:
+
+```toml
+sandbox_mode = "workspace-write"
+
+[windows]
+sandbox = "unelevated"
+
+[sandbox_workspace_write]
+network_access = true
+```
+
+Merge these sections into existing configuration; preserve the model provider,
+login and any intentional read-only policy. Elevated is the preferred native
+implementation when its administrator-approved setup is available; unelevated
+is a supported fallback. See the [official Windows sandbox documentation](https://developers.openai.com/codex/windows/).
+The bridge's unattended CLI uses `approval_policy="never"`, so an interactive
+elevation request cannot repair missing initial permissions. Network permission
+does not expand the filesystem write boundary. Diagnose any later cache or
+configuration write denial before adding a narrowly scoped writable directory.
+
 ## 1. Install the prerequisites
 
 Install Windows 10/11, Node.js `22.13.0` or newer, the official Lark CLI, and
