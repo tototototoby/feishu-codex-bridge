@@ -52,7 +52,36 @@ Desktop application.
 Use `doctor` to inspect local prerequisites. A successful check does not prove
 that the desktop component is compatible or that a message will be delivered.
 
+## Recovery after Desktop updates
+
+After updating this project's source, run `node .\src\cli.mjs desktop prepare`
+again and restart the Desktop adapter. Preparation updates its generated private
+runtime; it does not recreate the bot profile or its credentials.
+
+On Windows, a missing Codex executable previously discovered under
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<version>\codex.exe` can be resolved again
+from that installation's direct version directories. Recovery requires one
+valid executable, stays inside the installation's real directory, and rejects
+linked candidate directories or files. Existing executables and explicit
+`tools.codex` choices are preserved. No profile or credential is rewritten.
+If no unique executable can be established, inspect the installation and
+configure the intended tool/profile path explicitly; recovery fails instead
+of guessing which version to execute. This applies to the Desktop adapter;
+Office assistants retain their separate verified executable bindings.
+
+When its saved App Tools endpoint disappears, discovery can order a valid
+`CODEX_APP_TOOLS_PIPE_PATH` hint from the process environment within the same
+pipe namespace. The pipe must still be enumerated and pass the existing
+process-owner, single-process and anchor-thread checks. A hint does not bypass
+those checks or expand the candidate scan limit; an oversized or ambiguous
+candidate set remains blocked. If no hint or verified endpoint is available,
+discovery remains blocked; launch from the current Desktop environment or
+review the private endpoint configuration.
+
 ## Data and limits
+
+Historical thread pagination uses a 20,000-character per-item read limit to
+match the Codex Desktop App Tools API limit.
 
 ### Completion notifications (v0.1.1)
 

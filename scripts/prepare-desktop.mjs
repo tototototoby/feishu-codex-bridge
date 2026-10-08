@@ -14,7 +14,28 @@ const PATCH = "--- upstream\n+++ patched\n@@ -2,2 +2,22 @@\n import { Command } 
 export function applyPinnedDesktopPatch(upstreamText) {
   const digest = createHash('sha256').update(upstreamText, 'utf8').digest('hex');
   if (digest !== UPSTREAM_CLI_SHA256) throw new Error('Installed upstream CLI does not match the pinned 0.7.1 source hash.');
-  return applyUnifiedPatch(upstreamText, PATCH);
+  let patched = applyUnifiedPatch(upstreamText, PATCH);
+  const importAnchor = 'import { DesktopDispatcher } from "__DESKTOP_MODULES__/desktop-dispatcher.mjs";';
+  patched = replaceExactOnce(
+    patched,
+    importAnchor,
+    `${importAnchor}\nimport { resolveDesktopCodexBinary } from "__DESKTOP_MODULES__/desktop-codex-binary.mjs";`,
+    'Pinned Desktop module import anchor mismatch.'
+  );
+  const constructor = 'return new CodexAdapter({\n      binary: codex.binaryPath,';
+  patched = replaceExactOnce(
+    patched,
+    constructor,
+    constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
+    'Pinned Desktop Codex adapter constructor anchor mismatch.'
+  );
+  return patched;
+}
+
+function replaceExactOnce(source, needle, replacement, errorMessage) {
+  const index = source.indexOf(needle);
+  if (index < 0 || source.indexOf(needle, index + needle.length) !== -1) throw new Error(errorMessage);
+  return `${source.slice(0, index)}${replacement}${source.slice(index + needle.length)}`;
 }
 
 export async function prepareDesktop() {
