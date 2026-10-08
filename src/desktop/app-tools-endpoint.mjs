@@ -4,6 +4,7 @@ import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { assertAppToolsPipePath, configuredNodePath, requireAppToolsServer } from "./config.mjs";
 
 const PIPE_ROOT = "\\\\.\\pipe\\";
+const PIPE_PATH_ENV = "CODEX_APP_TOOLS_PIPE_PATH";
 const UUID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const METADATA_TIMEOUT_MS = 10_000;
 const METADATA_MAX_OUTPUT_BYTES = 8 * 1024;
@@ -110,8 +111,26 @@ export async function discoverAppToolsEndpoint({ control, anchorThreadId } = {})
   if (typeof anchorThreadId !== "string" || !anchorThreadId.trim()) return null;
 
   const suppliedName = suppliedPipePath ? suppliedPipePath.split(/[\\/]/).at(-1) : "";
-  const namespace = suppliedName ? getNamespace(suppliedName) : null;
-  if (suppliedName && !namespace) return null;
+  const suppliedNamespace = suppliedName ? getNamespace(suppliedName) : null;
+  if (suppliedName && !suppliedNamespace) return null;
+
+  let environmentPipePath = "";
+  const rawEnvironmentPipePath = typeof process.env[PIPE_PATH_ENV] === "string"
+    ? process.env[PIPE_PATH_ENV].trim()
+    : "";
+  if (rawEnvironmentPipePath) {
+    try { environmentPipePath = assertAppToolsPipePath(rawEnvironmentPipePath); } catch {}
+  }
+  const environmentName = environmentPipePath ? environmentPipePath.split(/[\\/]/).at(-1) : "";
+  const environmentNamespace = environmentName ? getNamespace(environmentName) : null;
+  const namespace = suppliedNamespace;
+  let fallbackPreferredName = "";
+  if (
+    environmentNamespace && namespace &&
+    environmentNamespace.prefix.toLowerCase() === namespace.prefix.toLowerCase()
+  ) {
+    fallbackPreferredName = environmentName;
+  }
 
   const key = `${namespace?.prefix ?? "*"}\0${anchorThreadId}`;
   const now = Date.now();
@@ -126,6 +145,7 @@ export async function discoverAppToolsEndpoint({ control, anchorThreadId } = {})
     ? findEndpoint({
       namespace,
       preferredName: suppliedName,
+      fallbackPreferredName,
       anchorThreadId,
       serverPath,
       nodePath: control?.nodePath || configuredNodePath(),
@@ -158,7 +178,7 @@ async function discoverAcrossNamespaces({ anchorThreadId, serverPath, nodePath }
   if (namespaces.size < 1 || namespaces.size > MAX_AUTO_NAMESPACES) return null;
   const deadline = Date.now() + DISCOVERY_TOTAL_TIMEOUT_MS;
   const endpoints = (await Promise.all([...namespaces.values()].map((namespace) =>
-    findEndpoint({ namespace, preferredName: null, anchorThreadId, serverPath, nodePath, deadline }),
+    findEndpoint({ namespace, anchorThreadId, serverPath, nodePath, deadline }),
   ))).filter(Boolean);
   const unique = new Map(endpoints.map((endpoint) => [endpoint.pipePath.toLowerCase(), endpoint]));
   return unique.size === 1 ? unique.values().next().value : null;
@@ -174,7 +194,7 @@ function getNamespace(name) {
   return { prefix };
 }
 
-async function findEndpoint({ namespace, preferredName, anchorThreadId, serverPath, nodePath, deadline }) {
+async function findEndpoint({ namespace, preferredName, fallbackPreferredName, anchorThreadId, serverPath, nodePath, deadline }) {
   const discoveryDeadline = deadline ?? (Date.now() + DISCOVERY_TOTAL_TIMEOUT_MS);
   let names;
   try {
@@ -195,9 +215,15 @@ async function findEndpoint({ namespace, preferredName, anchorThreadId, serverPa
     matchingNames.push(name);
   }
 
-  const preferred = preferredName ? matchingNames.find((name) => name.toLowerCase() === preferredName.toLowerCase()) : null;
-  const orderedNames = preferred
-    ? [preferred, ...matchingNames.filter((name) => name !== preferred)]
+  const preferred = preferredName
+    ? matchingNames.find((name) => name.toLowerCase() === preferredName.toLowerCase())
+    : null;
+  const fallbackPreferred = !preferred && fallbackPreferredName
+    ? matchingNames.find((name) => name.toLowerCase() === fallbackPreferredName.toLowerCase())
+    : null;
+  const orderedPreferred = preferred ?? fallbackPreferred;
+  const orderedNames = orderedPreferred
+    ? [orderedPreferred, ...matchingNames.filter((name) => name !== orderedPreferred)]
     : matchingNames;
   const candidateSetTruncated = orderedNames.length > MAX_CANDIDATES;
   const candidates = orderedNames.slice(0, MAX_CANDIDATES).map((name, index) => ({

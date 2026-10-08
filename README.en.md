@@ -28,6 +28,11 @@ profiles and reply as the bot.
   installed Codex Desktop/App Tools component. It is experimental and
   version-sensitive. This repository does not bundle the Desktop helper or
   plugin. See [Desktop integration](docs/desktop-experimental.md).
+- The Desktop adapter can recover a stale Codex executable path under narrow
+  conditions and verify a connection endpoint supplied by its current environment.
+  Run `desktop prepare` again after updating the source; see
+  [Desktop update recovery](docs/desktop-experimental.md#recovery-after-desktop-updates)
+  for the conditions and failure behavior.
 
 Messages are sent to Feishu/Lark and the Codex service selected in your setup.
 When Desktop or visibility features are enabled, selected content can also be

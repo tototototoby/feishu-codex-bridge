@@ -619,7 +619,7 @@ export class DesktopDispatcher {
           const cursor = this.historyCursor ?? snapshot.page?.nextCursor;
           if (cursor) {
             try {
-              const historical = threadSnapshot(await this.readDesktopThread({ threadId: this.control.threadId, cursor, turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: 64_000 }, { timeoutMs: MCP_CALL_TIMEOUT_MS }));
+              const historical = threadSnapshot(await this.readDesktopThread({ threadId: this.control.threadId, cursor, turnLimit: 1, includeOutputs: false, maxOutputCharsPerItem: MAX_OUTPUT_CHARS }, { timeoutMs: MCP_CALL_TIMEOUT_MS }));
               if (historical) {
                 snapshot.turns.push(...historical.turns.filter((turn) => !snapshot.turns.some((item) => item.id === turn.id)));
                 this.historyCursor = historical.page?.hasMore ? historical.page.nextCursor : null;
