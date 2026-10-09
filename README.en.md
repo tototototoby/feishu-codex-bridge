@@ -33,6 +33,11 @@ profiles and reply as the bot.
   Run `desktop prepare` again after updating the source; see
   [Desktop update recovery](docs/desktop-experimental.md#recovery-after-desktop-updates)
   for the conditions and failure behavior.
+- Office assistants check the Codex executable at construction, availability
+  checks, and execution. A missing versioned Desktop binary can recover under
+  narrow conditions, and generated runtime copies upgrade only from a
+  reproducible, matching v1 copy to v2. See
+  [Office update recovery](docs/setup.md#office-recovery-after-updates-and-reboots).
 
 Messages are sent to Feishu/Lark and the Codex service selected in your setup.
 When Desktop or visibility features are enabled, selected content can also be

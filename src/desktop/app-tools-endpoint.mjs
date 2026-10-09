@@ -15,6 +15,8 @@ const MCP_CLOSE_RESERVE_MS = 1_700;
 const SUCCESS_TTL_MS = 10_000;
 const NEGATIVE_TTL_MS = 5_000;
 const MAX_CANDIDATES = 6;
+const MAX_FALLBACK_CANDIDATES = 32;
+const ANCHOR_PROBE_CONCURRENCY = 8;
 const MAX_AUTO_NAMESPACES = 4;
 const MAX_CACHE_ENTRIES = 128;
 const discoveries = new Map();
@@ -218,12 +220,19 @@ async function findEndpoint({ namespace, preferredName, fallbackPreferredName, a
   const preferred = preferredName
     ? matchingNames.find((name) => name.toLowerCase() === preferredName.toLowerCase())
     : null;
-  const fallbackPreferred = !preferred && fallbackPreferredName
-    ? matchingNames.find((name) => name.toLowerCase() === fallbackPreferredName.toLowerCase())
-    : null;
-  const orderedPreferred = preferred ?? fallbackPreferred;
-  const orderedNames = orderedPreferred
-    ? [orderedPreferred, ...matchingNames.filter((name) => name !== orderedPreferred)]
+  if (!preferred && preferredName) {
+    return findFallbackEndpoint({
+      names: matchingNames,
+      fallbackPreferredName,
+      anchorThreadId,
+      serverPath,
+      nodePath,
+      discoveryDeadline,
+    });
+  }
+
+  const orderedNames = preferred
+    ? [preferred, ...matchingNames.filter((name) => name !== preferred)]
     : matchingNames;
   const candidateSetTruncated = orderedNames.length > MAX_CANDIDATES;
   const candidates = orderedNames.slice(0, MAX_CANDIDATES).map((name, index) => ({
@@ -262,6 +271,17 @@ async function findEndpoint({ namespace, preferredName, fallbackPreferredName, a
     }
   }
 
+  if (preferred) {
+    return findFallbackEndpoint({
+      names: matchingNames,
+      fallbackPreferredName,
+      anchorThreadId,
+      serverPath,
+      nodePath,
+      discoveryDeadline,
+    });
+  }
+
   if (candidateSetTruncated) return null;
 
   const verifiedCandidates = candidates.filter((candidate) => {
@@ -289,6 +309,89 @@ async function findEndpoint({ namespace, preferredName, fallbackPreferredName, a
     }
   }
   return null;
+}
+
+async function findFallbackEndpoint({
+  names,
+  fallbackPreferredName,
+  anchorThreadId,
+  serverPath,
+  nodePath,
+  discoveryDeadline,
+}) {
+  if (names.length === 0 || names.length > MAX_FALLBACK_CANDIDATES) return null;
+
+  const fallbackPreferred = fallbackPreferredName
+    ? names.find((name) => name.toLowerCase() === fallbackPreferredName.toLowerCase())
+    : null;
+  const orderedNames = fallbackPreferred
+    ? [fallbackPreferred, ...names.filter((name) => name !== fallbackPreferred)]
+    : names;
+  const candidates = orderedNames.map((name, index) => ({
+    index,
+    name,
+    pipePath: `${PIPE_ROOT}${name}`,
+  }));
+
+  const remainingBeforeMetadata = discoveryDeadline - Date.now();
+  const metadataTimeoutMs = Math.min(
+    METADATA_TIMEOUT_MS,
+    remainingBeforeMetadata - THREADS_CALL_TIMEOUT_MS - MCP_CLOSE_RESERVE_MS,
+  );
+  if (metadataTimeoutMs <= 0) return null;
+
+  const ownership = await getVerifiedDesktopPipeOwners(candidates, metadataTimeoutMs);
+  if (
+    Date.now() >= discoveryDeadline ||
+    ownership.length !== candidates.length ||
+    ownership.some((entry) => !entry.verified || entry.pid <= 0)
+  ) {
+    return null;
+  }
+
+  const desktopPids = new Set(ownership.map((entry) => entry.pid));
+  if (desktopPids.size !== 1) return null;
+
+  const found = await findAnchorAmongCandidates({
+    candidates,
+    anchorThreadId,
+    serverPath,
+    nodePath,
+    discoveryDeadline,
+  });
+  return found ? { pipePath: found.pipePath } : null;
+}
+
+async function findAnchorAmongCandidates({ candidates, anchorThreadId, serverPath, nodePath, discoveryDeadline }) {
+  let nextIndex = 0;
+  let found = null;
+  const workerCount = Math.min(ANCHOR_PROBE_CONCURRENCY, candidates.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (!found) {
+      if (Date.now() >= discoveryDeadline - MCP_CLOSE_RESERVE_MS) return;
+      const index = nextIndex;
+      nextIndex += 1;
+      const candidate = candidates[index];
+      if (!candidate) return;
+
+      const remainingCandidates = candidates.length - index;
+      const remainingBatches = Math.max(1, Math.ceil(remainingCandidates / ANCHOR_PROBE_CONCURRENCY));
+      const availableMs = discoveryDeadline - Date.now() - MCP_CLOSE_RESERVE_MS;
+      const timeoutMs = Math.min(THREADS_CALL_TIMEOUT_MS, Math.floor(availableMs / remainingBatches));
+      if (timeoutMs <= 0) return;
+
+      const matches = await pipeHasAnchorThread({
+        pipePath: candidate.pipePath,
+        anchorThreadId,
+        serverPath,
+        nodePath,
+        timeoutMs,
+      });
+      if (matches && !found) found = candidate;
+    }
+  });
+  await Promise.all(workers);
+  return found;
 }
 
 function nextProbeBudget(deadline) {
@@ -364,16 +467,22 @@ function parseOwnerRows(output, candidateCount) {
     return [];
   }
   const rows = Array.isArray(parsed) ? parsed : [parsed];
+  if (rows.length !== candidateCount) return [];
   const sanitized = [];
+  const seen = new Set();
   for (const row of rows) {
     if (
       Number.isInteger(row?.index) && row.index >= 0 && row.index < candidateCount &&
       Number.isInteger(row?.pid) && row.pid >= 0 && typeof row?.verified === "boolean"
     ) {
+      if (seen.has(row.index)) return [];
+      seen.add(row.index);
       sanitized.push({ index: row.index, pid: row.pid, verified: row.verified });
+    } else {
+      return [];
     }
   }
-  return sanitized;
+  return seen.size === candidateCount ? sanitized : [];
 }
 
 async function pipeHasAnchorThread({ pipePath, anchorThreadId, serverPath, nodePath, timeoutMs }) {
@@ -389,14 +498,19 @@ async function pipeHasAnchorThread({ pipePath, anchorThreadId, serverPath, nodeP
     });
     const probe = async () => {
       const tools = await client.listTools({ timeoutMs: LIST_CALL_TIMEOUT_MS });
-      const listThreadsTool = tools.find((tool) =>
-        typeof tool?.name === "string" && tool.name.toLowerCase().endsWith("list_threads"),
+      const readThreadTool = tools.find((tool) =>
+        typeof tool?.name === "string" && tool.name.toLowerCase().endsWith("read_thread"),
       );
-      if (!listThreadsTool) return false;
+      if (!readThreadTool) return false;
 
-      const properties = listThreadsTool.inputSchema?.properties ?? {};
-      const args = Object.hasOwn(properties, "limit") ? { limit: 50 } : {};
-      const result = await client.callTool(listThreadsTool.name, args, { timeoutMs: THREADS_CALL_TIMEOUT_MS });
+      const properties = readThreadTool.inputSchema?.properties ?? {};
+      if (!Object.hasOwn(properties, "threadId") || !Object.hasOwn(properties, "hostId")) return false;
+      const args = { threadId: anchorThreadId, hostId: "local" };
+      if (Object.hasOwn(properties, "turnLimit")) args.turnLimit = 1;
+      if (Object.hasOwn(properties, "includeOutputs")) args.includeOutputs = false;
+      if (Object.hasOwn(properties, "maxOutputCharsPerItem")) args.maxOutputCharsPerItem = 0;
+      if ((readThreadTool.inputSchema?.required ?? []).some((key) => args[key] === undefined)) return false;
+      const result = await client.callTool(readThreadTool.name, args, { timeoutMs: THREADS_CALL_TIMEOUT_MS });
       return !result?.isError && containsAnchorThread(result, anchorThreadId);
     };
     const timeLimit = new Promise((resolve) => {
@@ -427,11 +541,7 @@ function containsAnchorThread(result, anchorThreadId) {
   }
 
   for (const source of sources) {
-    for (const field of ["threads", "pinnedThreads"]) {
-      const entries = source[field];
-      if (!Array.isArray(entries)) continue;
-      if (entries.some((entry) => isAnchorThread(entry, anchorThreadId))) return true;
-    }
+    if (isAnchorThread(source.thread, anchorThreadId)) return true;
   }
   return false;
 }
