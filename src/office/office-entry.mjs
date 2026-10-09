@@ -19,7 +19,8 @@ const STOCK_PACKAGE_JSON = join(STOCK_PACKAGE_ROOT, "package.json");
 const STOCK_CLI = join(STOCK_PACKAGE_ROOT, "dist", "cli.js");
 const STOCK_VERSION = "0.7.1";
 const STOCK_SHA256 = "E9CDEED0C5E09C8E5155D00D11240152EF37B261DAF88CBC56E4A02E244C5601";
-const PATCHSET = "office-runtime-v1";
+const PATCHSET_V1 = "office-runtime-v1";
+const PATCHSET = "office-runtime-v2";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -128,7 +129,7 @@ function rewriteBareStaticImports(source, stockRequire) {
   return source;
 }
 
-function patchStockSource(source) {
+function patchStockSourceV1(source) {
   const officePolicyUrl = JSON.stringify(new URL("./office-policy.mjs", import.meta.url).href);
   const officeVisibilityUrl = JSON.stringify(new URL("./office-visibility.mjs", import.meta.url).href);
   const officeRealtimeUrl = JSON.stringify(new URL("./office-realtime.mjs", import.meta.url).href);
@@ -136,7 +137,7 @@ function patchStockSource(source) {
   source = replaceExactlyOnce(
     source,
     "// src/cli/index.ts\nimport { Command } from \"commander\";",
-    `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET}:policy-import\nimport { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess } from ${officePolicyUrl};\nimport { beginOfficeVisibilityRun, finishOfficeVisibilityRun, syncOfficeVisibilityEvent } from ${officeVisibilityUrl}; // OFFICE_PATCH:visibility-import
+    `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET_V1}:policy-import\nimport { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess } from ${officePolicyUrl};\nimport { beginOfficeVisibilityRun, finishOfficeVisibilityRun, syncOfficeVisibilityEvent } from ${officeVisibilityUrl}; // OFFICE_PATCH:visibility-import
 import { beginOfficeRealtimeRun, finishOfficeRealtimeRun, updateOfficeRealtimeRun } from ${officeRealtimeUrl}; // OFFICE_PATCH:realtime-import\nimport { claimOfficeMessage, recoverOfficeMessages } from ${officeRecoveryUrl}; // OFFICE_PATCH:recovery-import\nimport { Command } from "commander";`,
     "policy-import",
   );
@@ -312,16 +313,16 @@ import { beginOfficeRealtimeRun, finishOfficeRealtimeRun, updateOfficeRealtimeRu
   return source;
 }
 
-async function buildExpectedOfficeCli() {
+async function buildExpectedOfficeCliV1() {
   const packageJson = JSON.parse(await readFile(STOCK_PACKAGE_JSON, "utf8"));
   if (packageJson.version !== STOCK_VERSION) throw new Error("stock bridge version does not match the office pin");
   const stockSource = await readFile(STOCK_CLI, "utf8");
   if (sha256(stockSource) !== STOCK_SHA256) throw new Error("stock bridge source hash does not match the office pin");
   const stockRequire = createRequire(STOCK_PACKAGE_JSON);
-  let patched = patchStockSource(stockSource);
+  let patched = patchStockSourceV1(stockSource);
   patched = rewriteBareStaticImports(patched, stockRequire);
-  const marker = `// OFFICE_PATCHSET:${PATCHSET}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
-  const importAnchor = `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET}:policy-import\n`;
+  const marker = `// OFFICE_PATCHSET:${PATCHSET_V1}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const importAnchor = `// src/cli/index.ts\n// OFFICE_PATCHSET:${PATCHSET_V1}:policy-import\n`;
   patched = replaceExactlyOnce(patched, importAnchor, `${marker}\n${importAnchor}`, "patchset-marker");
   const requiredMarkers = [
     marker,
@@ -361,6 +362,56 @@ async function buildExpectedOfficeCli() {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV1ToV2(v1Expected) {
+  const officePolicyUrl = JSON.stringify(new URL("./office-policy.mjs", import.meta.url).href);
+  const v1Marker = `// OFFICE_PATCHSET:${PATCHSET_V1}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v2Marker = `// OFFICE_PATCHSET:${PATCHSET}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v1Expected, v1Marker, v2Marker, "patchset-marker-v2");
+  patched = replaceExactlyOnce(
+    patched,
+    `// OFFICE_PATCHSET:${PATCHSET_V1}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET}:policy-import`,
+    "policy-import-marker-v2",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    `import { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess } from ${officePolicyUrl};`,
+    `import { assertOfficeRunOptions, enforceOfficeProfilePolicy, isOfficeAllowedOpenId, isOfficeRuntime, loadOfficeAssistantFromProcess, resolveOfficeCodexBinary } from ${officePolicyUrl}; // OFFICE_PATCH:codex-binary-import`,
+    "codex-binary-import",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    "    return new CodexAdapter({\n      binary: codex.binaryPath,",
+    "    return new CodexAdapter({\n      binary: isOfficeRuntime() ? resolveOfficeCodexBinary(codex.binaryPath) : codex.binaryPath, // OFFICE_PATCH:codex-binary-recovery",
+    "codex-binary-recovery",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    "    return checkAgentAvailability({\n      agentId: \"codex\",\n      agentName: \"Codex CLI\",\n      command: this.binary,\n      binaryPath: this.binary\n    });",
+    "    const binary = isOfficeRuntime() ? resolveOfficeCodexBinary(this.binary) : this.binary; // OFFICE_PATCH:codex-binary-availability\n    return checkAgentAvailability({\n      agentId: \"codex\",\n      agentName: \"Codex CLI\",\n      command: binary,\n      binaryPath: binary\n    });",
+    "codex-binary-availability",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    "    const child = spawnProcess(this.binary, args, { // OFFICE_PATCH:process-only-homes",
+    "    const child = spawnProcess(isOfficeRuntime() ? resolveOfficeCodexBinary(this.binary) : this.binary, args, { // OFFICE_PATCH:process-only-homes OFFICE_PATCH:codex-binary-spawn",
+    "codex-binary-spawn",
+  );
+
+  const requiredMarkers = [
+    v2Marker,
+    `// OFFICE_PATCHSET:${PATCHSET}:policy-import`,
+    "OFFICE_PATCH:codex-binary-import",
+    "OFFICE_PATCH:codex-binary-recovery",
+    "OFFICE_PATCH:codex-binary-availability",
+    "OFFICE_PATCH:codex-binary-spawn",
+  ];
+  for (const required of requiredMarkers) {
+    if (!patched.includes(required)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -374,7 +425,8 @@ async function writeTextAtomic(path, text) {
 }
 
 async function ensureOfficeCli(assistant) {
-  const expected = await buildExpectedOfficeCli();
+  const v1Expected = await buildExpectedOfficeCliV1();
+  const expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -382,6 +434,10 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
+    if (currentHash === sha256(v1Expected)) {
+      await writeTextAtomic(officeCli, expected);
+      return officeCli;
+    }
     throw new Error("generated office CLI copy changed; refusing to run");
   }
   await writeTextAtomic(officeCli, expected);
@@ -1045,15 +1101,14 @@ async function stop(name) {
   }
 }
 
-async function prepare() {
-  const key = process.argv[3];
-  if (!key) {
+async function prepare(name) {
+  if (!name) {
     console.error("Provide an assistant key so the generated runtime copy stays beneath that assistant's private data directory.");
     process.exitCode = 2;
     return;
   }
   try {
-    const assistant = loadOfficeAssistant(key);
+    const assistant = loadOfficeAssistant(name);
     const cli = await ensureOfficeCli(assistant);
     console.log(`Verified office CLI runtime copy is ready for ${assistant.displayName} (${assistant.key}).`);
   } catch (error) {
@@ -1099,7 +1154,7 @@ async function main() {
   if (command === "serve" && name) return serve(name);
   if (command === "check-ready" && name) return checkReady(name);
   if (command === "task-install" && name) return taskInstall(name);
-  if (command === "prepare" && name) return prepare();
+  if (command === "prepare" && name) return prepare(name);
   usage();
   process.exitCode = 2;
 }

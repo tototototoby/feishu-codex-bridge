@@ -1,5 +1,6 @@
+import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadProjectConfig, officeRoot, safeAssistantSegment, toolPath } from '../settings.mjs';
 
@@ -8,6 +9,40 @@ export const OFFICE_SOURCE_ROOT = MODULE_DIR;
 const OPEN_ID_RE = /^ou_[A-Za-z0-9_-]{8,128}$/;
 const APP_ID_RE = /^cli_[A-Za-z0-9_-]{8,128}$/;
 const UNION_ID_RE = /^on_[A-Za-z0-9_-]{8,128}$/;
+const CODEX_VERSION_DIRECTORY_RE = /^[0-9a-f]{16}$/i;
+const OFFICE_CODEX_BINARY_ERROR = 'office Codex binary is missing, ambiguous, or inaccessible';
+const OFFICE_CODEX_SCAN_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$payload = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd()) -ErrorAction Stop
+$localAppData = [string]$payload.localAppData
+$openAiRoot = Join-Path $localAppData 'OpenAI'
+$codexRoot = Join-Path $openAiRoot 'Codex'
+$binRoot = Join-Path $codexRoot 'bin'
+foreach ($path in @($localAppData, $openAiRoot, $codexRoot, $binRoot)) {
+  $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+  if (-not $item.PSIsContainer -or (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'untrusted Codex directory' }
+}
+$versions = New-Object System.Collections.Generic.List[string]
+foreach ($entry in Get-ChildItem -LiteralPath $binRoot -Force -ErrorAction Stop) {
+  if ($entry.Name -notmatch '^[0-9a-f]{16}$') { continue }
+  $versionDirectory = Get-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+  if (($versionDirectory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'untrusted Codex version directory' }
+  if (-not $versionDirectory.PSIsContainer) { continue }
+  $candidate = Join-Path $versionDirectory.FullName 'codex.exe'
+  try {
+    $candidateInfo = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+  } catch {
+    if ($_.CategoryInfo.Category.ToString() -eq 'ObjectNotFound') { continue }
+    throw
+  }
+  if ($candidateInfo.PSIsContainer -or (($candidateInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)) { throw 'untrusted Codex executable' }
+  $versions.Add([string]$versionDirectory.Name)
+}
+ConvertTo-Json -InputObject @($versions.ToArray()) -Compress
+`;
 
 function definitionFor(key) {
   const safeKey = safeAssistantSegment(key);
@@ -150,6 +185,150 @@ export function loadOfficeAssistantFromProcess({ requireReady = false } = {}) {
 
 export function isOfficeRuntime() {
   return process.env.LARK_OFFICE_RUNTIME === '1';
+}
+
+export function resolveOfficeCodexBinary(configuredPath) {
+  if (process.platform !== 'win32' || typeof configuredPath !== 'string' || !configuredPath || !win32.isAbsolute(configuredPath)) {
+    return configuredPath;
+  }
+
+  let projectTools;
+  try {
+    projectTools = loadProjectConfig().tools ?? {};
+  } catch {
+    throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  }
+  if (Object.prototype.hasOwnProperty.call(projectTools, 'codex')) return configuredPath;
+
+  const localAppData = process.env.LOCALAPPDATA;
+  if (typeof localAppData !== 'string' || !win32.isAbsolute(localAppData)) return configuredPath;
+
+  let codexRoot;
+  let configuredRelative;
+  try {
+    if (hasWindowsDotSegment(localAppData) || hasWindowsDotSegment(configuredPath)) return configuredPath;
+    codexRoot = win32.resolve(localAppData, 'OpenAI', 'Codex');
+    configuredRelative = win32.relative(codexRoot, win32.resolve(configuredPath));
+  } catch {
+    return configuredPath;
+  }
+  const configuredParts = configuredRelative.split(win32.sep);
+  if (configuredParts.length !== 3 || configuredParts[0].toLowerCase() !== 'bin' ||
+      !CODEX_VERSION_DIRECTORY_RE.test(configuredParts[1]) || configuredParts[2].toLowerCase() !== 'codex.exe') {
+    return configuredPath;
+  }
+
+  try {
+    lstatSync(configuredPath);
+    return configuredPath;
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  }
+
+  const localAppDataPath = win32.resolve(localAppData);
+  const openAiRoot = win32.join(localAppDataPath, 'OpenAI');
+  const codexRootPath = win32.join(openAiRoot, 'Codex');
+  const binRoot = win32.join(codexRoot, 'bin');
+  let rootRealPath;
+  let versionDirectories;
+  try {
+    assertOfficeCodexDirectory(localAppDataPath, localAppDataPath);
+    assertOfficeCodexDirectory(openAiRoot, win32.join(localAppDataPath, 'OpenAI'));
+    rootRealPath = assertOfficeCodexDirectory(codexRootPath, win32.join(localAppDataPath, 'OpenAI', 'Codex'));
+    assertOfficeCodexDirectory(binRoot, win32.join(rootRealPath, 'bin'));
+    versionDirectories = scanOfficeCodexVersionDirectories(localAppDataPath);
+  } catch {
+    throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  }
+
+  const candidates = [];
+  for (const versionName of versionDirectories) {
+    if (!CODEX_VERSION_DIRECTORY_RE.test(versionName)) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+    const versionDirectory = win32.join(binRoot, versionName);
+    const candidate = win32.join(versionDirectory, 'codex.exe');
+    try {
+      const directoryInfo = lstatSync(versionDirectory);
+      if (isOfficeCodexReparsePoint(directoryInfo) || !directoryInfo.isDirectory()) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+      const expectedDirectory = win32.join(rootRealPath, 'bin', versionName);
+      const directoryRealPath = realpathSync(versionDirectory);
+      if (!sameWindowsPath(directoryRealPath, expectedDirectory) || !isWithinWindowsPath(rootRealPath, directoryRealPath)) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+
+      const fileInfo = lstatSync(candidate);
+      if (isOfficeCodexReparsePoint(fileInfo) || !fileInfo.isFile()) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+      const expectedCandidate = win32.join(expectedDirectory, 'codex.exe');
+      const candidateRealPath = realpathSync(candidate);
+      if (!sameWindowsPath(candidateRealPath, expectedCandidate) || !isWithinWindowsPath(rootRealPath, candidateRealPath)) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+      candidates.push(candidateRealPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw new Error(OFFICE_CODEX_BINARY_ERROR);
+    }
+  }
+
+  if (candidates.length !== 1) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  return candidates[0];
+}
+
+function scanOfficeCodexVersionDirectories(localAppData) {
+  const systemRoot = process.env.SystemRoot;
+  if (typeof systemRoot !== 'string' || !win32.isAbsolute(systemRoot) || hasWindowsDotSegment(systemRoot)) {
+    throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  }
+  const powershellPath = win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  try {
+    const powershellInfo = lstatSync(powershellPath);
+    if (isOfficeCodexReparsePoint(powershellInfo) || !powershellInfo.isFile() ||
+        !sameWindowsPath(realpathSync(powershellPath), powershellPath)) {
+      throw new Error(OFFICE_CODEX_BINARY_ERROR);
+    }
+    const output = execFileSync(powershellPath, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', OFFICE_CODEX_SCAN_SCRIPT], {
+      input: JSON.stringify({ localAppData }),
+      encoding: 'utf8',
+      windowsHide: true,
+      shell: false,
+      timeout: 5000,
+      maxBuffer: 16 * 1024,
+      env: {
+        SystemRoot: win32.resolve(systemRoot),
+        WINDIR: win32.resolve(systemRoot),
+        PATH: win32.join(win32.resolve(systemRoot), 'System32'),
+        PSModulePath: win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+      },
+    });
+    const versions = JSON.parse(output);
+    if (!Array.isArray(versions) || versions.some((version) => typeof version !== 'string' || !CODEX_VERSION_DIRECTORY_RE.test(version))) {
+      throw new Error(OFFICE_CODEX_BINARY_ERROR);
+    }
+    return versions;
+  } catch {
+    throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  }
+}
+
+function isOfficeCodexReparsePoint(stat) {
+  return stat.isSymbolicLink() || (typeof stat.attributes === 'number' && (stat.attributes & 0x400) !== 0);
+}
+
+function assertOfficeCodexDirectory(path, expectedPath) {
+  const stat = lstatSync(path);
+  if (isOfficeCodexReparsePoint(stat) || !stat.isDirectory()) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  const actualPath = realpathSync(path);
+  if (!sameWindowsPath(actualPath, expectedPath)) throw new Error(OFFICE_CODEX_BINARY_ERROR);
+  return actualPath;
+}
+
+function sameWindowsPath(left, right) {
+  return win32.resolve(left).toLowerCase() === win32.resolve(right).toLowerCase();
+}
+
+function isWithinWindowsPath(rootPath, candidatePath) {
+  const relativePath = win32.relative(rootPath, candidatePath);
+  return relativePath !== '' && relativePath !== '..' &&
+    !relativePath.startsWith(`..${win32.sep}`) && !win32.isAbsolute(relativePath);
+}
+
+function hasWindowsDotSegment(path) {
+  return path.split(/[\\/]+/).some((segment) => segment === '.' || segment === '..');
 }
 
 export function assertOfficeRunOptions(options) {

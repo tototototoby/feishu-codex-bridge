@@ -72,11 +72,19 @@ Office assistants retain their separate verified executable bindings.
 When its saved App Tools endpoint disappears, discovery can order a valid
 `CODEX_APP_TOOLS_PIPE_PATH` hint from the process environment within the same
 pipe namespace. The pipe must still be enumerated and pass the existing
-process-owner, single-process and anchor-thread checks. A hint does not bypass
-those checks or expand the candidate scan limit; an oversized or ambiguous
-candidate set remains blocked. If no hint or verified endpoint is available,
-discovery remains blocked; launch from the current Desktop environment or
-review the private endpoint configuration.
+process-owner and anchor-thread checks. An existing preferred endpoint retains
+the six-candidate fast path. If it is absent or fails its anchor check, recovery
+within its saved namespace examines the complete candidate set, up to 32
+pipes. Every ownership record must be present and unique, every candidate must
+be verified, and all candidates must belong to one trusted Desktop process.
+The exact local Codex thread ID is then checked with `read_thread`, using at
+most eight concurrent probes within the existing 20-second deadline and
+shutdown reserve. An environment hint only affects candidate ordering.
+
+An oversized, unverifiable, ambiguous or slow candidate set remains blocked.
+Without a saved namespace, the existing cross-namespace unique-endpoint
+discovery policy still applies. This is bounded recovery for the supported
+Desktop component, not a stable public transport contract.
 
 ## Data and limits
 

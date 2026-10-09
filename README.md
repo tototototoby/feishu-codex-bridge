@@ -18,6 +18,7 @@
 - 同一桌面聊天可启用 `desktop.notifyCompletion`：处理结束后另发新消息提醒，保留发送状态以避免重连重复发送。
 - 可选的 Codex Desktop 适配器需要你另行安装的 Codex Desktop/App Tools，属于实验性、版本敏感功能；本仓库不包含 Desktop helper/plugin。详见 [Desktop 实验功能](docs/desktop-experimental.md)。
 - Desktop 适配器可在受限条件下恢复桌面更新后失效的 Codex 程序路径，并核验当前环境提供的连接端点。更新源码后需重新运行 `desktop prepare`；恢复条件与失败处理见 [Desktop 更新恢复](docs/desktop-experimental.md#recovery-after-desktop-updates)。
+- 办公助手在启动、可用性检查和实际执行时核对 Codex 程序路径，受限恢复版本目录轮换造成的失效；生成运行文件仅从可重建并匹配的 v1 副本升级到 v2。见 [办公助手更新恢复](docs/setup.md#office-recovery-after-updates-and-reboots)。
 
 消息会按配置发送给 Feishu/Lark 和你所用的 Codex 服务。启用 Desktop 或可见记录功能时，所选内容还可能作为提示词发送到指定线程。不要把它理解为只在本机显示的纯日志。
 

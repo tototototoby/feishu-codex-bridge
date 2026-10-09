@@ -4,6 +4,40 @@ This guide describes the intended `v0.1.2` setup flow. A clean-install,
 end-to-end run has not been verified. Use a Feishu/Lark tenant and Codex
 account that you control, and start with a test bot and non-sensitive messages.
 
+## Office recovery after updates and reboots
+
+Updating Codex Desktop can remove the version directory recorded in an Office
+profile. Office runtime v2 checks the executable at adapter construction,
+availability checks and process launch, so an already running supervisor can
+also handle a later installation update. The assistant/profile executable
+binding and identity checks remain in effect; recovery only changes the
+in-memory executable used for that invocation.
+
+Recovery is limited to a missing Windows path of the form
+`%LOCALAPPDATA%\OpenAI\Codex\bin\<16-hex-version>\codex.exe`, with no explicit
+`tools.codex` configuration. The installation tree and candidate must be real
+directories/files without linked or reparse paths, and exactly one valid
+candidate must exist. Other configured paths, permission errors and ambiguous
+installations remain blocked. Inspect explicit tool/profile bindings when
+manual repair is needed; do not select a version just by its modification time.
+
+After updating this source, use the normal per-assistant `office stop <key>`
+and `office start <key>` lifecycle. A stopped assistant's generated CLI can
+upgrade from v1 to v2 only when its bytes match the v1 content rebuilt from the
+pinned upstream package at the current installation location. A v2 copy is
+reused only when it also matches the expected content. Unknown/manual changes
+are rejected rather than overwritten; moving the installation or dependencies
+can likewise require review of the private generated copy. Private profiles,
+credentials and workspaces are not recreated during this upgrade.
+
+Executable discovery and OS process launch are separate operations; an
+installation update between them can still make that particular launch fail.
+A successful startup is also insufficient evidence of Feishu delivery. Check
+the actual reply receipt and content for a real authorized incoming request.
+Messages missed while the service was down are not automatically replayed;
+the existing recovery inbox requires validated original message IDs and
+shares the durable intake claim ledger.
+
 ## Native Windows execution permissions
 
 Configure the native Windows sandbox in each assistant's private Codex home,
