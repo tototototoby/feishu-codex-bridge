@@ -1,7 +1,10 @@
-import { readdirSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { desktopRoot, loadProjectConfig, toolPath } from '../settings.mjs';
+
+const APP_TOOLS_PLUGIN_PATH = ['plugins', 'cache', 'openai-bundled', 'codex-app-tools'];
+const STABLE_SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
 
 function projectConfig() {
   try { return loadProjectConfig(); } catch { return {}; }
@@ -85,26 +88,17 @@ export function resolveAppToolsServer() {
   const explicit = tools && typeof tools === 'object' && typeof tools.appToolsServer === 'string'
     ? tools.appToolsServer.trim()
     : '';
-  if (explicit) return existingAbsoluteFile(explicit);
+  if (explicit) return resolveRequestedAppToolsServer(explicit);
 
-  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
-  const cacheRoot = join(codexHome, 'plugins', 'cache', 'openai-bundled', 'codex-app-tools');
-  try {
-    const versions = readdirSync(cacheRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
-      .map((entry) => entry.name)
-      .sort(compareVersions)
-      .reverse();
-    for (const version of versions) {
-      const candidate = join(cacheRoot, version, 'server.mjs');
-      if (isRegularFile(candidate)) return candidate;
-    }
-  } catch { /* App Tools is optional until desktop relay is enabled. */ }
+  for (const installRoot of officialAppToolsRoots()) {
+    const candidate = findHighestStableServer(installRoot);
+    if (candidate) return candidate;
+  }
   return null;
 }
 
 export function requireAppToolsServer(value) {
-  const path = value ? existingAbsoluteFile(value) : resolveAppToolsServer();
+  const path = value ? resolveRequestedAppToolsServer(value) : resolveAppToolsServer();
   if (path && !isConfiguredOrInstalledServer(path)) throw new Error('Codex App Tools server must be the installed Codex App Tools component.');
   if (!path) throw new Error('Codex App Tools server is not installed or configured.');
   return path;
@@ -115,13 +109,7 @@ function isConfiguredOrInstalledServer(candidate) {
   if (typeof explicit === 'string' && explicit.trim()) {
     try { if (resolve(explicit) === candidate) return true; } catch { return false; }
   }
-  const codexHome = process.env.CODEX_HOME?.trim() || join(homedir(), '.codex');
-  const root = resolve(join(codexHome, 'plugins', 'cache', 'openai-bundled', 'codex-app-tools'));
-  const rootPrefix = `${root}${process.platform === 'win32' ? '\\' : '/'}`;
-  const foldedCandidate = resolve(candidate).toLowerCase();
-  const foldedRootPrefix = rootPrefix.toLowerCase();
-  const relative = foldedCandidate.slice(foldedRootPrefix.length).replaceAll('\\', '/');
-  return foldedCandidate.startsWith(foldedRootPrefix) && /^\/[^/]+\/server\.mjs$/i.test(relative);
+  return officialInstallRootForServer(candidate) !== null;
 }
 
 function existingAbsoluteFile(value) {
@@ -135,15 +123,100 @@ function isRegularFile(path) {
   try { return statSync(path).isFile(); } catch { return false; }
 }
 
-function compareVersions(left, right) {
-  const a = left.split(/[.-]/).map((part) => /^\d+$/.test(part) ? Number(part) : part);
-  const b = right.split(/[.-]/).map((part) => /^\d+$/.test(part) ? Number(part) : part);
-  for (let index = 0; index < Math.max(a.length, b.length); index++) {
-    const x = a[index] ?? 0;
-    const y = b[index] ?? 0;
-    if (x === y) continue;
-    if (typeof x === 'number' && typeof y === 'number') return x - y;
-    return String(x).localeCompare(String(y), undefined, { numeric: true });
+function resolveRequestedAppToolsServer(value) {
+  if (!isAbsolute(value)) throw new Error('Codex App Tools server path must be absolute.');
+  const candidate = resolve(value);
+  try {
+    lstatSync(candidate);
+    return existingAbsoluteFile(candidate);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') return existingAbsoluteFile(candidate);
   }
-  return 0;
+
+  const installRoot = officialInstallRootForServer(candidate);
+  const replacement = installRoot ? findHighestStableServer(installRoot) : null;
+  return replacement ?? existingAbsoluteFile(candidate);
+}
+
+function officialAppToolsRoots() {
+  const roots = [];
+  const configuredHome = process.env.CODEX_HOME?.trim();
+  if (configuredHome && isAbsolute(configuredHome)) {
+    roots.push(resolve(join(configuredHome, ...APP_TOOLS_PLUGIN_PATH)));
+  }
+  roots.push(resolve(join(homedir(), '.codex', ...APP_TOOLS_PLUGIN_PATH)));
+
+  const seen = new Set();
+  return roots.filter((root) => {
+    const key = process.platform === 'win32' ? root.toLowerCase() : root;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function officialInstallRootForServer(candidate) {
+  if (!isAbsolute(candidate)) return null;
+  const absoluteCandidate = resolve(candidate);
+  for (const installRoot of officialAppToolsRoots()) {
+    const parts = relative(installRoot, absoluteCandidate).replaceAll('\\', '/').split('/');
+    if (parts.length === 2 && STABLE_SEMVER.test(parts[0]) && parts[1].toLowerCase() === 'server.mjs') {
+      return installRoot;
+    }
+  }
+  return null;
+}
+
+function findHighestStableServer(installRoot) {
+  let canonicalRoot;
+  let versions;
+  try {
+    if (!statSync(installRoot).isDirectory()) return null;
+    canonicalRoot = realpathSync(installRoot);
+    versions = readdirSync(installRoot).filter((entry) => STABLE_SEMVER.test(entry)).sort(compareStableVersionsDescending);
+  } catch {
+    return null;
+  }
+
+  for (const version of versions) {
+    const versionPath = join(installRoot, version);
+    const serverPath = join(versionPath, 'server.mjs');
+    try {
+      const versionStat = lstatSync(versionPath);
+      if (!versionStat.isDirectory() || versionStat.isSymbolicLink()) continue;
+      const canonicalVersion = realpathSync(versionPath);
+      if (!isDirectChild(canonicalRoot, canonicalVersion)) continue;
+
+      const serverStat = lstatSync(serverPath);
+      if (!serverStat.isFile() || serverStat.isSymbolicLink()) continue;
+      const canonicalServer = realpathSync(serverPath);
+      if (!isWithin(canonicalRoot, canonicalServer) || !isWithin(canonicalVersion, canonicalServer)) continue;
+      return serverPath;
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      return null;
+    }
+  }
+  return null;
+}
+
+function compareStableVersionsDescending(left, right) {
+  const leftParts = left.match(STABLE_SEMVER).slice(1, 4).map(BigInt);
+  const rightParts = right.match(STABLE_SEMVER).slice(1, 4).map(BigInt);
+  for (let index = 0; index < 3; index += 1) {
+    if (leftParts[index] !== rightParts[index]) return leftParts[index] > rightParts[index] ? -1 : 1;
+  }
+  return left < right ? 1 : left > right ? -1 : 0;
+}
+
+function isDirectChild(parent, candidate) {
+  const pathFromParent = relative(parent, candidate);
+  return pathFromParent !== '' && !pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' &&
+    !isAbsolute(pathFromParent) && !pathFromParent.includes(sep);
+}
+
+function isWithin(parent, candidate) {
+  const pathFromParent = relative(parent, candidate);
+  return pathFromParent === '' || (!pathFromParent.startsWith(`..${sep}`) && pathFromParent !== '..' &&
+    !isAbsolute(pathFromParent));
 }

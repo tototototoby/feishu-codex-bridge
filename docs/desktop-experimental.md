@@ -69,6 +69,17 @@ configure the intended tool/profile path explicitly; recovery fails instead
 of guessing which version to execute. This applies to the Desktop adapter;
 Office assistants retain their separate verified executable bindings.
 
+If an App Tools update removes a saved `server.mjs`, the Desktop adapter can
+resolve a replacement only when that missing path names a stable version under
+the user's `.codex` cache or an absolute `CODEX_HOME` cache. It chooses the
+highest available stable version in the same cache, compares version numbers
+numerically, and rejects linked candidate version directories or scripts and
+paths that escape the cache's real directory. Missing custom script paths still
+fail. Resolution runs again before starting the MCP subprocess, so an update
+between client creation and connection is also covered. Saved chat bindings and
+credentials are preserved; endpoint ownership and exact thread checks remain
+required.
+
 When its saved App Tools endpoint disappears, discovery can order a valid
 `CODEX_APP_TOOLS_PIPE_PATH` hint from the process environment within the same
 pipe namespace. The pipe must still be enumerated and pass the existing
