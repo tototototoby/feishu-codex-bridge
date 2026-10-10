@@ -50,7 +50,8 @@ export class AppToolsMcpClient {
 
     let child;
     try {
-      child = spawn(this.nodePath, [this.serverPath], {
+      const effectiveServerPath = requireAppToolsServer(this.serverPath);
+      child = spawn(this.nodePath, [effectiveServerPath], {
         stdio: ["pipe", "pipe", "pipe"],
         windowsHide: true,
         env: { ...process.env, [PIPE_ENV]: this.pipePath },
