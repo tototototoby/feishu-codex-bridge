@@ -21,6 +21,7 @@ const STOCK_VERSION = "0.7.1";
 const STOCK_SHA256 = "E9CDEED0C5E09C8E5155D00D11240152EF37B261DAF88CBC56E4A02E244C5601";
 const PATCHSET_V1 = "office-runtime-v1";
 const PATCHSET = "office-runtime-v2";
+const PATCHSET_CURRENT = "office-runtime-v3";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -412,6 +413,93 @@ function upgradeExpectedOfficeCliV1ToV2(v1Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV2ToV3(v2Expected) {
+  const officeRecoveryUrl = JSON.stringify(new URL("./office-recovery.mjs", import.meta.url).href);
+  const officeStartupRetryUrl = JSON.stringify(new URL("./office-startup-retry.mjs", import.meta.url).href);
+  const v2Marker = `// OFFICE_PATCHSET:${PATCHSET}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v3Marker = `// OFFICE_PATCHSET:${PATCHSET_CURRENT}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v2Expected, v2Marker, v3Marker, "patchset-marker-v3");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_CURRENT}:policy-import`, "policy-import-marker-v3");
+  patched = replaceExactlyOnce(patched,
+    `import { claimOfficeMessage, recoverOfficeMessages } from ${officeRecoveryUrl}; // OFFICE_PATCH:recovery-import`,
+    `import { claimOfficeMessage, recoverOfficeMessages } from ${officeRecoveryUrl}; // OFFICE_PATCH:recovery-import\nimport { createOfficeStartupProof, createOfficeStartupRetryRun } from ${officeStartupRetryUrl}; // OFFICE_PATCH:startup-retry-import`,
+    "startup-retry-import");
+  patched = replaceExactlyOnce(
+    patched,
+    '  run(opts) {\n    if (!opts.cwd) {\n      throw new Error("cwd is required for CodexAdapter.run");',
+    '  run(opts) {\n    if (isOfficeRuntime() && opts.officeStartupAttempt !== true) {\n      return createOfficeStartupRetryRun(opts, (attemptOpts) => this.run({ ...attemptOpts, officeStartupAttempt: true }), (fields) => log.info("office-startup-retry", "retry-started", fields));\n    } // OFFICE_PATCH:startup-retry-boundary\n    if (!opts.cwd) {\n      throw new Error("cwd is required for CodexAdapter.run");',
+    "startup-retry-boundary",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    '    const child = spawnProcess(isOfficeRuntime() ? resolveOfficeCodexBinary(this.binary) : this.binary, args, { // OFFICE_PATCH:process-only-homes OFFICE_PATCH:codex-binary-spawn\n      cwd: opts.cwd,\n      env: mergeProcessEnv(process.env, envOverrides),\n      stdio: ["pipe", "pipe", "pipe"]\n    });',
+    '    const officeStartupProof = isOfficeRuntime() ? createOfficeStartupProof() : null;\n    const child = spawnProcess(isOfficeRuntime() ? resolveOfficeCodexBinary(this.binary) : this.binary, args, { // OFFICE_PATCH:process-only-homes OFFICE_PATCH:codex-binary-spawn\n      cwd: opts.cwd,\n      env: mergeProcessEnv(process.env, envOverrides),\n      stdio: ["pipe", "pipe", "pipe"]\n    });\n    officeStartupProof?.attach(child); // OFFICE_PATCH:startup-retry-close',
+    "startup-retry-close",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    '      events: createEventStream2(child, stderrChunks, () => runtimeError, () => stopReason),',
+    '      events: createEventStream2(child, stderrChunks, () => runtimeError, () => stopReason, officeStartupProof),\n      async officeStartupResult() {\n        const exit = await officeStartupProof.waitForClose();\n        return officeStartupProof.result({ ...exit, runtimeError, stopReason });\n      }, // OFFICE_PATCH:startup-retry-proof',
+    "startup-retry-proof",
+  );
+  const streamStart = patched.indexOf("async function* createEventStream2(");
+  const streamEnd = patched.indexOf("async function waitForExitCode(child)", streamStart);
+  if (streamStart < 0 || streamEnd < streamStart) throw new Error("stock patch anchor mismatch: startup-retry-stream");
+  const originalStream = patched.slice(streamStart, streamEnd);
+  let guardedStream = replaceExactlyOnce(originalStream,
+    "async function* createEventStream2(child, stderrChunks, getError, getStopReason) {",
+    "async function* createEventStream2(child, stderrChunks, getError, getStopReason, officeStartupProof) {",
+    "startup-retry-stream-signature");
+  guardedStream = replaceExactlyOnce(guardedStream,
+    "      sawStdout = true;\n      const trimmed = line.trim();",
+    "      sawStdout = true;\n      officeStartupProof?.observe(line); // OFFICE_PATCH:startup-retry-raw\n      const trimmed = line.trim();",
+    "startup-retry-raw");
+  guardedStream = replaceExactlyOnce(guardedStream,
+    "      yield* translator.translate(parsed);\n    }\n  } finally {",
+    "      yield* translator.translate(parsed);\n    }\n    officeStartupProof?.finish(); // OFFICE_PATCH:startup-retry-exhausted\n  } finally {",
+    "startup-retry-exhausted");
+  guardedStream = replaceExactlyOnce(guardedStream,
+    "  const exitCode = await waitForExitCode(child);",
+    "  const exitCode = officeStartupProof ? (await officeStartupProof.waitForClose()).code : await waitForExitCode(child); // OFFICE_PATCH:startup-retry-bounded-close",
+    "startup-retry-bounded-close");
+  patched = replaceExactlyOnce(patched, originalStream, guardedStream, "startup-retry-stream");
+  patched = replaceExactlyOnce(
+    patched,
+    "      stopGraceMs: input.stopGraceMs\n    };",
+    "      stopGraceMs: input.stopGraceMs,\n      officeSourceMessageIds: input.observability?.officeSourceMessageIds // OFFICE_PATCH:startup-retry-run-sources\n    };",
+    "startup-retry-run-sources",
+  );
+  patched = replaceExactlyOnce(
+    patched,
+    '      profile: controls.profile,\n      agent: capability.agentId,\n      source: "im",\n      stage: "submit"',
+    '      profile: controls.profile,\n      agent: capability.agentId,\n      source: "im",\n      stage: "submit",\n      officeSourceMessageIds: isOfficeRuntime() ? batch.map((message) => message.messageId) : void 0 // OFFICE_PATCH:startup-retry-original-sources',
+    "startup-retry-original-sources",
+  );
+
+  patched = replaceExactlyOnce(patched,
+    `  await channel.connect();\n  if (isOfficeRuntime()) {\n    const recover = () => recoverOfficeMessages(channel, (msg) => intakeMessage({ channel, agent, sessions: sessions2, sessionCatalog, workspaces, activeRuns, pending, msg, controls, chatModeCache, logThreadModeOverride, executor, pool })).catch(() => log.warn("office-recovery", "recover-deferred", {}));\n    await recover();\n    const recoveryTimer = setInterval(recover, 30000);\n    recoveryTimer.unref?.();\n  } // OFFICE_PATCH:recovery-inbox`,
+    `  await channel.connect();\n  if (isOfficeRuntime()) {\n    const normalizeRecoverySource = (source) => normalize({\n      sender: { sender_id: { open_id: source.sender.id }, sender_type: "user" },\n      message: { message_id: source.message_id, chat_id: source.chat_id, chat_type: "p2p", message_type: source.msg_type, content: source.body.content, create_time: String(source.create_time), mentions: source.mentions, parent_id: source.parent_id, root_id: source.root_id, thread_id: source.thread_id }\n    }, { botIdentity: channel.botIdentity ?? { openId: "", name: "" }, stripBotMentions: false }); // OFFICE_PATCH:recovery-trusted-normalize\n    const recover = () => recoverOfficeMessages(channel, (msg) => intakeMessage({ channel, agent, sessions: sessions2, sessionCatalog, workspaces, activeRuns, pending, msg, controls, chatModeCache, logThreadModeOverride, executor, pool }), normalizeRecoverySource).catch(() => log.warn("office-recovery", "recover-deferred", {}));\n    await recover();\n    const recoveryTimer = setInterval(recover, 30000);\n    recoveryTimer.unref?.();\n  } // OFFICE_PATCH:recovery-inbox`,
+    "recovery-trusted-normalize");
+  const requiredMarkers = [v3Marker,
+    "OFFICE_PATCH:startup-retry-import",
+    "OFFICE_PATCH:startup-retry-boundary",
+    "OFFICE_PATCH:startup-retry-close",
+    "OFFICE_PATCH:startup-retry-proof",
+    "OFFICE_PATCH:startup-retry-raw",
+    "OFFICE_PATCH:startup-retry-exhausted",
+    "OFFICE_PATCH:startup-retry-bounded-close",
+    "OFFICE_PATCH:startup-retry-run-sources",
+    "OFFICE_PATCH:startup-retry-original-sources",
+    "OFFICE_PATCH:recovery-trusted-normalize",
+  ];
+  for (const required of requiredMarkers) {
+    if (!patched.includes(required)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -426,7 +514,8 @@ async function writeTextAtomic(path, text) {
 
 async function ensureOfficeCli(assistant) {
   const v1Expected = await buildExpectedOfficeCliV1();
-  const expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
+  const v2Expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
+  const expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -434,7 +523,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }

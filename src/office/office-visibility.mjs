@@ -37,6 +37,7 @@ export function beginOfficeVisibilityRun(scope, runId, sourceMessageIds = []) {
     kind: "status",
     eventId: `started:${runId}`,
     runId,
+    sourceMessageIds: activeRuns.get(scope).sourceMessageIds,
     content: "Office assistant accepted this run.",
   });
 }
@@ -235,7 +236,12 @@ async function drainOutbox(binding, path, records) {
       scheduleRetry();
       return;
     }
-    for (const record of pending) {
+    for (const [index, record] of pending.entries()) {
+      if (index > 0 && !(await targetIsVerified(client, readTool, binding.target))) {
+        await markDeferred(pending, path, records, "target-not-idle");
+        scheduleRetry();
+        break;
+      }
       const args = sendArgs(sendTool, binding.target.threadId, record.prompt);
       await appendTransition(path, records, record, "sending");
       let result;
@@ -274,6 +280,11 @@ async function targetIsVerified(client, tool, target) {
     if (thread?.id !== target.threadId) continue;
     if (thread.hostId != null && thread.hostId !== "local") continue;
     if (thread.kind != null && thread.kind !== "codex") continue;
+    const status = thread.status?.type;
+    if (status !== "idle" && status !== "notLoaded") continue;
+    // An unloaded mirror needs explicit local Codex identity and turn evidence.
+    if (status === "notLoaded" && (thread.hostId !== "local" || thread.kind !== "codex")) continue;
+    if (!Array.isArray(item.turns) || item.turns.some((turn) => turn?.status === "inProgress")) continue;
     return true;
   }
   return false;

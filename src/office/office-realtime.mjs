@@ -117,7 +117,7 @@ export async function finishOfficeRealtimeRun(scope, runId, state) {
     const streamed = result?.kind === "streamed";
     const fallback = !streamed;
     reportEvent(run, "finish", { terminal: state?.terminal ?? "unknown", result: result?.kind ?? "unknown", fallback });
-    if (streamed && run.notifyCompletion) await deliverCompletionNotice(run);
+    if (isCompleted && streamed && run.notifyCompletion) await deliverCompletionNotice(run);
     const finalDelivery = streamed ? null : await deliverFinalTextOnce(run, content);
     return {
       kind: result?.kind ?? "uncertain",
