@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "enabled": false,
+  "appId": "",
+  "allowedOpenId": "",
+  "chatId": "",
+  "threadId": "",
+  "anchorThreadId": "",
+  "workspace": "",
+  "controlPath": ""
+}

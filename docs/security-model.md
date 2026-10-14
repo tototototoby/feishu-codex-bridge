@@ -54,10 +54,16 @@ those conversations private from the services handling them.
   union ID. A matching tenant alone does not establish the namespace. Compare
   the candidate OAuth response with that independent baseline; never adopt the
   candidate's value as its own expected identity.
-- Assistants use separate profile directories, workspaces, and Codex homes.
+- CLI assistants use separate profile directories, workspaces, and Codex homes.
   This is configuration separation under the same Windows account, not an
   operating-system security boundary. Any process running as that Windows user
   can potentially read another profile's files.
+- Optional native Office execution uses the chosen Codex Desktop thread's
+  shared tools, skills, resources and authorization after explicit owner
+  approval. The retained CLI home does not isolate that native execution.
+  Bot app, owner, chat, control and request-state bindings still constrain
+  transport and Feishu delivery. Only explicitly marked deliverables within
+  the office workspace's real `output` directory may be attached automatically.
 - Treat all inbound chat text, attachments, links, and quoted instructions as
   untrusted input. Use the minimum app permissions and do not route secrets or
   privileged actions into a bot conversation.
