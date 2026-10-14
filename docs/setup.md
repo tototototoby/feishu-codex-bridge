@@ -7,7 +7,7 @@ account that you control, and start with a test bot and non-sensitive messages.
 ## Office recovery after updates and reboots
 
 Updating Codex Desktop can remove the version directory recorded in an Office
-profile. Office runtime v2 checks the executable at adapter construction,
+profile. Office runtime v3 checks the executable at adapter construction,
 availability checks and process launch, so an already running supervisor can
 also handle a later installation update. The assistant/profile executable
 binding and identity checks remain in effect; recovery only changes the
@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1 to v2 only when its bytes match the v1 content rebuilt from the
-pinned upstream package at the current installation location. A v2 copy is
-reused only when it also matches the expected content. Unknown/manual changes
+upgrade from v1 or v2 to v3 only when its bytes match the corresponding content
+rebuilt from the pinned upstream package at the current installation location.
+A v3 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -37,6 +37,42 @@ the actual reply receipt and content for a real authorized incoming request.
 Messages missed while the service was down are not automatically replayed;
 the existing recovery inbox requires validated original message IDs and
 shares the durable intake claim ledger.
+
+## Office startup retry and manual recovery
+
+Office runtime v3 can retry one startup failure for the same run and original
+source messages. It observes every raw Codex stdout line before translation and
+requires only the exact startup sequence ending in
+`workspace routing discovery timed out`, with no assistant output, tool calls,
+unknown records or extra fields. The first process must close naturally with a
+nonzero exit code and no signal, interruption or runtime error before retry.
+Output buffers are bounded. A process that remains open eight seconds after a
+terminal record or exit is cleaned up and disqualified from retry.
+
+Retry claims are stored under the assistant's private bridge directory, once
+per run and per original message ID. Existing, partial or uncertain claims
+block another retry even across a restart or overlapping message batches. The
+original intake ledger is preserved; retry does not enqueue the message again.
+Capacity errors, authorization failures and failures after work has started
+still require review. A successful retry is not proof that future requests or
+their Feishu delivery will succeed.
+
+Manual recovery of an already claimed message requires a reviewed recovery
+inbox entry and a matching one-attempt grant in that original ledger entry.
+The inbox reads back the exact Feishu message, chat and user sender before
+creating an in-memory grant for the normalized source object. The intake path
+consumes that grant once and records `recovery_claimed`; live duplicate events
+cannot use it. Do not clear original claims to force recovery, and do not grant
+recovery where prior output, side effects or delivery remain uncertain.
+
+Recovery supports text and rich-text `post` messages through the same upstream
+normalizer as live messages, preserving post resource references for ordinary
+attachment handling. Other message types remain marked for manual recovery.
+Completion notices require a successfully completed streamed reply. An idle
+visibility mirror, an accepted request or a progress card does not prove that
+the business request completed. Visibility records are deferred while the
+configured local Codex target has an active turn; an unloaded target additionally
+requires explicit local identity, Codex kind and turn evidence.
 
 ## Native Windows execution permissions
 
