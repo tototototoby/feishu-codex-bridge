@@ -7,7 +7,7 @@ account that you control, and start with a test bot and non-sensitive messages.
 ## Office recovery after updates and reboots
 
 Updating Codex Desktop can remove the version directory recorded in an Office
-profile. Office runtime v3 checks the executable at adapter construction,
+profile. Office runtime v4 checks the executable at adapter construction,
 availability checks and process launch, so an already running supervisor can
 also handle a later installation update. The assistant/profile executable
 binding and identity checks remain in effect; recovery only changes the
@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1 or v2 to v3 only when its bytes match the corresponding content
+upgrade from v1, v2 or v3 to v4 only when its bytes match the corresponding content
 rebuilt from the pinned upstream package at the current installation location.
-A v3 copy is reused only when it matches the expected content. Unknown/manual changes
+A v4 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -40,7 +40,7 @@ shares the durable intake claim ledger.
 
 ## Office startup retry and manual recovery
 
-Office runtime v3 can retry one startup failure for the same run and original
+Office runtime v3 and later can retry one startup failure for the same run and original
 source messages. It observes every raw Codex stdout line before translation and
 requires only the exact startup sequence ending in
 `workspace routing discovery timed out`, with no assistant output, tool calls,
@@ -73,6 +73,60 @@ visibility mirror, an accepted request or a progress card does not prove that
 the business request completed. Visibility records are deferred while the
 configured local Codex target has an active turn; an unloaded target additionally
 requires explicit local identity, Codex kind and turn evidence.
+
+## Optional native Codex Desktop execution
+
+Office runtime v4 can send new requests directly into one existing native
+Codex Desktop thread. Enable this only after the owner explicitly authorizes
+using that thread's current tools, skills, resources and model authorization.
+Execution uses the shared Desktop runtime; the retained CLI profile and Codex
+home are transport and history metadata in this mode. The verified bot app,
+owner open ID and direct-message chat remain fixed delivery boundaries.
+
+Copy [the disabled native example](../examples/office-native.example.json) to
+`<assistant-directory>/native-desktop.json`, and fill it locally using verified
+values. `appId`, `allowedOpenId` and `workspace` must match the existing office
+assistant. `chatId` identifies its owner's direct message. `threadId` is the
+intended native Desktop thread; `anchorThreadId` is a distinct trusted local
+thread used to verify the App Tools endpoint. `controlPath` must be the absolute
+path `<assistant-bridge-home>/native-desktop-control.json`. Use
+[the control example](../examples/office-native-control.example.json) for that
+file and set its matching `threadId` and current trusted local `pipePath`.
+The portable runtime resolves the installed App Tools server and Node through
+the usual project tools settings. Private bindings and pipe identifiers belong
+in the data directory, never in source control.
+
+Set `enabled: true` only after reviewing both files and the recipient mapping,
+then use the normal `office stop <key>` / `office start <key>` lifecycle.
+Absent or explicitly disabled native configuration keeps the CLI route.
+Invalid enabled configuration consumes the request without starting a second
+executor or visibility mirror. Availability notices require readback of the
+original sender, chat and message, and persist a sending intent before sending;
+uncertain intents are not automatically repeated. Local readiness confirms
+binding and state only, not actual endpoint or business-message delivery.
+
+`/stop` steers the current native thread to stop unfinished work; it does not
+guarantee forced interruption. `/status` asks that thread for its actual state.
+Session-changing commands such as `/new`, `/reset`, `/resume`, `/cd`, `/ws`
+and `/timeout` return a fixed-connection explanation. Activation does not
+replay old business requests. Incoming attachments and quoted messages follow
+the normal media/reference handling, with missing items reported explicitly.
+
+Requested outgoing deliverables must be explicit Markdown links to absolute
+Windows paths between `<!-- office-output:start -->` and
+`<!-- office-output:end -->` in the marked final answer. The bridge removes
+that region from the visible answer and sends only supported files whose real
+paths remain under `<assistant-workspace>/output`. Each file is limited to
+26 MiB, with at most 16 output links per answer. Images, PDF, Office/ZIP/ODF,
+RTF and common text files receive size, extension and content checks. The
+source message, sender and bot binding are verified before delivery; changed
+bytes, uncertain sends and restart-interrupted sends are not retried
+automatically. A send receipt and successful readback are separate evidence.
+
+This integration is experimental. Source publication and local readiness do
+not prove live request, stop/status, incoming media or outgoing attachment
+delivery. Verify only through authorized business messages and retain the
+actual receipts before claiming completion.
 
 ## Native Windows execution permissions
 

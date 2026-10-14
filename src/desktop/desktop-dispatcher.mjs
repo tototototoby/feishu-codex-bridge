@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { DesktopPresentation } from "./desktop-presentation.mjs";
 import { sendCompletionNoticeOnce } from "./completion-notifier.mjs";
@@ -19,6 +19,11 @@ import {
   configuredNodePath,
   assertAppToolsPipePath,
 } from "./config.mjs";
+
+const CHAT_ID_RE = /^oc_[0-9a-f]{32}$/;
+const OPEN_ID_RE = /^ou_[A-Za-z0-9_-]{8,128}$/;
+const APP_ID_RE = /^cli_[A-Za-z0-9_-]{8,128}$/;
+const THREAD_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const POLL_INTERVAL_MS = 1_000;
 const PROGRESS_INTERVAL_MS = 5_000;
@@ -46,6 +51,7 @@ const TERMINAL_STATUSES = new Set([
 export class DesktopDispatcher {
   constructor({
     scope = configuredDesktopChatId(),
+    officeBinding = null,
     promptInstructions = [],
     onFinal = async () => {},
     controlPath,
@@ -61,7 +67,15 @@ export class DesktopDispatcher {
     pollIntervalMs = POLL_INTERVAL_MS,
     requestTimeoutMs = REQUEST_TIMEOUT_MS,
   } = {}) {
-    if (typeof scope !== "string" || !scope.trim() || ![configuredDesktopChatId(), configuredGroupChatId()].includes(scope)) throw new Error("unsupported-desktop-relay-scope");
+    if (officeBinding !== null && (!CHAT_ID_RE.test(scope) || officeBinding.scope !== scope ||
+      !THREAD_ID_RE.test(officeBinding.threadId ?? "") || !OPEN_ID_RE.test(officeBinding.allowedSenderId ?? "") ||
+      !APP_ID_RE.test(officeBinding.appId ?? "") || !isAbsolute(controlPath ?? "") || !isAbsolute(statePath ?? "") ||
+      (officeBinding.anchorThreadId != null && !THREAD_ID_RE.test(officeBinding.anchorThreadId)))) {
+      throw new Error("invalid-office-desktop-binding");
+    }
+    if (!officeBinding && (typeof scope !== "string" || !scope.trim() || ![configuredDesktopChatId(), configuredGroupChatId()].includes(scope))) throw new Error("unsupported-desktop-relay-scope");
+    if (officeBinding && [configuredDesktopChatId(), configuredGroupChatId()].includes(scope)) throw new Error("office-desktop-scope-reserved");
+    this.officeBinding = officeBinding ? Object.freeze({ ...officeBinding }) : null;
     this.scope = scope;
     this.promptInstructions = promptInstructions;
     this.onFinal = onFinal;
@@ -102,6 +116,7 @@ export class DesktopDispatcher {
       await this.loadControl();
       if (this.controlError === "desktop-disabled") return;
       await this.loadState();
+      if (this.officeBinding && (this.controlError || this.stateError)) return;
       await this.resumePendingPresentations();
       await this.resumePendingCompletionNotices();
       if ([...this.requests.values()].some((request) => MONITOR_STATUSES.has(request.status))) {
@@ -208,12 +223,12 @@ export class DesktopDispatcher {
   async loadControl() {
     try {
       const groupScope = this.scope === configuredGroupChatId();
-      if (groupScope ? !groupEnabled() : !desktopEnabled()) {
+      if (!this.officeBinding && (groupScope ? !groupEnabled() : !desktopEnabled())) {
         this.control = null;
         this.controlError = "desktop-disabled";
         return;
       }
-      const expectedThreadId = groupScope ? groupSettings().threadId : configuredDesktopThreadId();
+      const expectedThreadId = this.officeBinding?.threadId ?? (groupScope ? groupSettings().threadId : configuredDesktopThreadId());
       if (typeof expectedThreadId !== "string" || !expectedThreadId.trim()) {
         this.control = null;
         this.controlError = "desktop-thread-not-configured";
@@ -224,7 +239,7 @@ export class DesktopDispatcher {
         this.controlError = "group-thread-must-be-distinct";
         return;
       }
-      const raw = await readControlDocument(this.controlPath, this.scope, expectedThreadId);
+      const raw = await readControlDocument(this.controlPath, this.scope, expectedThreadId, this.officeBinding);
       const pipePath = typeof raw?.pipePath === "string" && raw.pipePath.trim()
         ? assertAppToolsPipePath(raw.pipePath)
         : "";
@@ -236,14 +251,14 @@ export class DesktopDispatcher {
         pipePath,
         serverPath,
         nodePath: configuredNodePath(),
-        notifyCompletion: !groupScope && this.scope === configuredDesktopChatId() && raw?.notifyCompletion === true,
+        notifyCompletion: !groupScope && (this.scope === configuredDesktopChatId() || Boolean(this.officeBinding)) && raw?.notifyCompletion === true,
       };
       if (this.control.threadId !== expectedThreadId || !this.control.nodePath) {
         this.controlError = "invalid-control";
         this.control = null;
         return;
       }
-      this.anchorThreadId = expectedThreadId;
+      this.anchorThreadId = this.officeBinding?.anchorThreadId ?? expectedThreadId;
       const endpoint = await discoverAppToolsEndpoint({ control: this.control, anchorThreadId: this.anchorThreadId });
       if (!endpoint) {
         this.controlError = "endpoint-unverified";
@@ -264,7 +279,12 @@ export class DesktopDispatcher {
       if (raw?.version !== 1 || !Array.isArray(raw.requests)) throw new Error("invalid-state");
       for (const input of raw.requests) {
         const request = normalizeRequest(input);
-        if (!request) continue;
+        if (!request) {
+          if (this.officeBinding) throw new Error("invalid-office-request-state");
+          continue;
+        }
+        if (this.officeBinding && (request.chatId !== this.scope || request.senderId !== this.officeBinding.allowedSenderId ||
+          request.appId !== this.officeBinding.appId)) throw new Error("office-state-binding-mismatch");
         if (request.status === "reply_sending") request.status = request.finalAnswer && request.presentationMessageId && request.deliveryMode === "normal-card-patch"
           ? "reply_retry_pending" : "reply_uncertain";
         if (request.status === "notice_sending") request.status = "notice_uncertain";
@@ -285,12 +305,16 @@ export class DesktopDispatcher {
         return;
       }
       this.stateError = "state-unavailable";
+      if (this.officeBinding) {
+        this.requests.clear(); this.messageIndex.clear(); this.seenMessageIds.clear();
+      }
       this.reportError("state-load", "invalid-or-unreadable");
     }
   }
 
   async matches(scope, identity, catalogEntry) {
     await this.initialize();
+    if (this.officeBinding) return scope === this.scope;
     if (scope !== this.scope || identity?.agentId !== "codex" || !isConfiguredScope(scope)) return false;
     if (catalogEntry?.agentId !== "codex" || !catalogEntry.threadId) return false;
     // With a broken control file, fail closed for this configured scope so it
@@ -314,6 +338,8 @@ export class DesktopDispatcher {
     await this.initialize();
     if (this.closed) return true;
     if (msg?.chatId !== this.scope) throw new RelayError("relay-scope-mismatch");
+    if (this.officeBinding && msg?.senderId !== this.officeBinding.allowedSenderId) throw new RelayError("office-sender-binding-mismatch");
+    if (this.officeBinding && (!this.stateReady || this.stateError)) throw new RelayError("state-unavailable");
     const messageId = nonEmptyString(msg?.messageId);
     if (!messageId) {
       this.reportError("dispatch", "missing-message-id");
@@ -329,6 +355,7 @@ export class DesktopDispatcher {
     const request = {
       requestId: randomUUID(),
       messageId,
+      ...(this.officeBinding ? { chatId: this.scope, senderId: msg.senderId, appId: this.officeBinding.appId } : {}),
       replyInThread: Boolean(msg.threadId),
       completionNoticeEligible: this.control?.notifyCompletion === true,
       completionNoticeState: null,
@@ -440,9 +467,18 @@ export class DesktopDispatcher {
         `Earlier requests still need their own explicit replies: ${earlierRequests.map((item) => item.requestId).join(", ")}. If this work also fully resolves one of them, include a short truthful acknowledgement between that request's own exact feishu-reply start/end markers. Keep unrelated or unfinished requests pending; never repeat credentials or verification codes.`
       ] : [];
       const prompt = buildForwardPrompt(request, msg, attachments, { promptInstructions: [...this.promptInstructions, ...pendingInstructions], referenceContext });
+      const sendInput = { threadId: this.control.threadId, prompt };
+      if (this.officeBinding) {
+        const tools = await this.getClient().listTools({ timeoutMs: MCP_CALL_TIMEOUT_MS });
+        const tool = tools.find((item) => /(?:sendmessagetothread|sendmessage)$/.test(String(item?.name ?? "").toLowerCase().replace(/[^a-z0-9]/g, "")));
+        if (!tool) throw new RelayError("office-native-send-unavailable");
+        const properties = tool.inputSchema?.properties ?? {};
+        if (Object.hasOwn(properties, "model")) sendInput.model = "gpt-6.1-sol";
+        if (Object.hasOwn(properties, "thinking")) sendInput.thinking = "high";
+      }
       sendStarted = true;
       const sendResult = await this.getClient().sendMessage(
-        { threadId: this.control.threadId, prompt },
+        sendInput,
         { timeoutMs: MCP_CALL_TIMEOUT_MS },
       );
       assertToolSuccess(sendResult, "send_message_to_thread");
@@ -492,11 +528,11 @@ export class DesktopDispatcher {
     this.recoveringConnection = (async () => {
       const before = this.control;
       let stored;
-      try { stored = await readControlDocument(this.controlPath, this.scope, before.threadId); } catch { return false; }
+      try { stored = await readControlDocument(this.controlPath, this.scope, before.threadId, this.officeBinding); } catch { return false; }
       if (stored.threadId !== before.threadId || stored.mode !== before.mode) return false;
       const endpoint = await discoverAppToolsEndpoint({ control: { ...stored, serverPath: before.serverPath, nodePath: before.nodePath }, anchorThreadId: this.anchorThreadId });
       if (!endpoint || this.closed) return false;
-      const latest = await readControlDocument(this.controlPath, this.scope, before.threadId);
+      const latest = await readControlDocument(this.controlPath, this.scope, before.threadId, this.officeBinding);
       if (this.closed) return false;
       if (latest.threadId !== before.threadId || latest.mode !== before.mode) return false;
       if (latest.pipePath !== stored.pipePath) return false;
@@ -765,7 +801,8 @@ export class DesktopDispatcher {
 
   isCompletionNoticeEnabled(request) {
     return request?.completionNoticeEligible === true &&
-      this.scope === configuredDesktopChatId() &&
+      (this.scope === configuredDesktopChatId() || Boolean(this.officeBinding)) &&
+      (!this.officeBinding || (!this.controlError && !this.stateError)) &&
       this.control?.notifyCompletion === true;
   }
 
@@ -968,6 +1005,9 @@ function normalizeRequest(input) {
   return {
     requestId,
     messageId,
+    chatId: nonEmptyString(input.chatId),
+    senderId: nonEmptyString(input.senderId),
+    appId: nonEmptyString(input.appId),
     replyInThread: input.replyInThread === true,
     completionNoticeEligible: input.completionNoticeEligible === true,
     completionNoticeState: normalizeCompletionNoticeState(input.completionNoticeState),
@@ -1007,6 +1047,7 @@ function serializableRequest(request) {
   return {
     requestId: request.requestId,
     messageId: request.messageId,
+    ...(request.chatId ? { chatId: request.chatId, senderId: request.senderId, appId: request.appId } : {}),
     replyInThread: request.replyInThread,
     completionNoticeEligible: request.completionNoticeEligible,
     completionNoticeState: request.completionNoticeState,
@@ -1256,7 +1297,10 @@ function formatFeishuReply(request, answer) {
     const count = request.unsupportedAttachments + request.missingAttachmentCount;
     notes.push(`_备注：${count} 个附件未能完整转入桌面线程。_`);
   }
-  return [...notes, answer].filter(Boolean).join("\n\n");
+  const publicAnswer = request.appId
+    ? String(answer).replace(/<!-- office-output:start -->[\s\S]*?<!-- office-output:end -->/g, "").trim()
+    : answer;
+  return [...notes, publicAnswer].filter(Boolean).join("\n\n");
 }
 
 function assertToolSuccess(result, tool) {
@@ -1325,21 +1369,22 @@ function isConfiguredScope(scope) {
     (scope === configuredGroupChatId() && groupEnabled());
 }
 
-async function readControlDocument(path, scope, expectedThreadId) {
+async function readControlDocument(path, scope, expectedThreadId, officeBinding = null) {
   const groupScope = scope === configuredGroupChatId();
-  const configured = groupScope ? groupSettings() : desktopSettings();
+  const configured = officeBinding ? {} : groupScope ? groupSettings() : desktopSettings();
   let raw = {};
   try {
     raw = JSON.parse((await readFile(path, "utf8")).replace(/^\uFEFF/, ""));
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("invalid-control");
   } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
+    if (officeBinding || error?.code !== "ENOENT") throw error;
   }
+  if (officeBinding && (raw.threadId !== expectedThreadId || !raw.pipePath)) throw new Error("office-control-binding-mismatch");
   return {
     ...configured,
     ...raw,
     threadId: raw.threadId ?? expectedThreadId,
     mode: raw.mode ?? configured.mode ?? "steer",
-    pipePath: raw.pipePath ?? configured.pipePath ?? (groupScope ? desktopSettings().pipePath : undefined),
+    pipePath: raw.pipePath ?? configured.pipePath ?? (!officeBinding && groupScope ? desktopSettings().pipePath : undefined),
   };
 }

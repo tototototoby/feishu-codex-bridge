@@ -36,8 +36,14 @@ profiles and reply as the bot.
 - Office assistants check the Codex executable at construction, availability
   checks, and execution. A missing versioned Desktop binary can recover under
   narrow conditions, and generated runtime copies upgrade only from a
-  reproducible, matching v1 copy to v2. See
+  reproducible, matching v1/v2/v3 copy to v4. See
   [Office update recovery](docs/setup.md#office-recovery-after-updates-and-reboots).
+- Explicitly opt an Office assistant into an existing native Codex Desktop
+  thread to use its shared tools, skills and authorization while retaining
+  verified bot, owner and direct-message delivery bindings. Stop/status steering
+  and marked output attachment delivery are included; see
+  [native Office execution](docs/setup.md#optional-native-codex-desktop-execution)
+  for private configuration and validation limits.
 
 Messages are sent to Feishu/Lark and the Codex service selected in your setup.
 When Desktop or visibility features are enabled, selected content can also be

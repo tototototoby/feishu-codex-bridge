@@ -22,6 +22,7 @@ const STOCK_SHA256 = "E9CDEED0C5E09C8E5155D00D11240152EF37B261DAF88CBC56E4A02E24
 const PATCHSET_V1 = "office-runtime-v1";
 const PATCHSET = "office-runtime-v2";
 const PATCHSET_CURRENT = "office-runtime-v3";
+const PATCHSET_NATIVE = "office-runtime-v4";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -500,6 +501,77 @@ function upgradeExpectedOfficeCliV2ToV3(v2Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV3ToV4(v3Expected) {
+  const officeStartupRetryUrl = JSON.stringify(new URL("./office-startup-retry.mjs", import.meta.url).href);
+  const officeNativeUrl = JSON.stringify(new URL("./office-native.mjs", import.meta.url).href);
+  const v3Marker = `// OFFICE_PATCHSET:${PATCHSET_CURRENT}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v4Marker = `// OFFICE_PATCHSET:${PATCHSET_NATIVE}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v3Expected, v3Marker, v4Marker, "patchset-marker-v4");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET_CURRENT}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_NATIVE}:policy-import`, "policy-import-marker-v4");
+  patched = replaceExactlyOnce(patched,
+    `import { createOfficeStartupProof, createOfficeStartupRetryRun } from ${officeStartupRetryUrl}; // OFFICE_PATCH:startup-retry-import`,
+    `import { createOfficeStartupProof, createOfficeStartupRetryRun } from ${officeStartupRetryUrl}; // OFFICE_PATCH:startup-retry-import\nimport { createOfficeNativeBridge } from ${officeNativeUrl}; // OFFICE_PATCH:native-import`,
+    "native-import");
+  patched = replaceExactlyOnce(patched,
+    `  if (isOfficeRuntime() && accessDecision.ok && isOfficeAllowedOpenId(msg.senderId) && msg.chatType === "p2p") {\n    void syncOfficeVisibilityEvent({ kind: "input", eventId: \`input:\${emsg.messageId}\`, sourceMessageId: emsg.messageId, content: emsg.content }); // OFFICE_PATCH:visibility-input\n  }\n  const handled = await tryHandleCommand({`,
+    `  if (isOfficeRuntime() && !deps.officeNative?.enabled && accessDecision.ok && isOfficeAllowedOpenId(msg.senderId) && msg.chatType === "p2p") {\n    void syncOfficeVisibilityEvent({ kind: "input", eventId: \`input:\${emsg.messageId}\`, sourceMessageId: emsg.messageId, content: emsg.content }); // OFFICE_PATCH:visibility-input\n  }\n  const nativeCommand = deps.officeNative?.enabled ? await deps.officeNative.handleCommand(emsg) : null; // OFFICE_PATCH:native-command\n  const handled = nativeCommand === "handled" || (nativeCommand !== "dispatch" && await tryHandleCommand({`,
+    "native-command");
+  patched = replaceExactlyOnce(patched,
+    "    processPool: pool,\n    controls\n  });\n  if (handled) {",
+    "    processPool: pool,\n    controls\n  }));\n  if (handled) {",
+    "native-command-close");
+  patched = replaceExactlyOnce(patched,
+    "  const channel = createLarkChannel(opts);\n  const media = new MediaCache(channel, deps.appPaths?.mediaDir);",
+    `  const channel = createLarkChannel(opts);\n  const media = new MediaCache(channel, deps.appPaths?.mediaDir);\n  const officeNative = isOfficeRuntime() ? await createOfficeNativeBridge({ channel, appId: cfg.accounts.app.id, logger: (phase, code, details) => log.warn("office-native", phase, { code, ...details }) }) : null; // OFFICE_PATCH:native-create`,
+    "native-create");
+  patched = replaceExactlyOnce(patched,
+    "        () => intakeMessage({\n          channel,\n          agent,",
+    "        () => intakeMessage({\n          channel,\n          media,\n          officeNative, // OFFICE_PATCH:native-live-intake\n          agent,",
+    "native-live-intake");
+  patched = replaceExactlyOnce(patched,
+    "  const size = pending.push(scope, emsg);",
+    `  if (deps.officeNative?.enabled) { // OFFICE_PATCH:native-direct-intake
+    if (!deps.officeNative.accepts(emsg)) {
+      await deps.officeNative.dispatch({ channel, msg: emsg });
+      return;
+    }
+    const resourceItems = emsg.resources.map((resource) => ({ messageId: emsg.messageId, resource }));
+    let attachments = [];
+    try {
+      attachments = await deps.media.resolve(resourceItems, controls.profileConfig.attachments);
+    } catch {
+      log.warn("office-native", "media-resolve-failed", { messageId: emsg.messageId });
+    }
+    // MediaCache returns one decision per successfully resolved resource,
+    // including rejected/skipped decisions. The remainder is exactly missing.
+    const missingAttachmentCount = Math.max(0, resourceItems.length - attachments.length);
+    const quoteTarget = replyQuoteTargetForMessage(emsg, chatMode);
+    const referenceContext = quoteTarget && quoteTarget !== emsg.messageId
+      ? await fetchQuotedContext(channel, quoteTarget) ?? { messageId: quoteTarget, status: "fetch_failed" }
+      : null;
+    await deps.officeNative.dispatch({ channel, msg: emsg, attachments, missingAttachmentCount, referenceContext });
+    return;
+  }
+  const size = pending.push(scope, emsg);`,
+    "native-direct-intake");
+  patched = replaceExactlyOnce(patched,
+    "      const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([\n        channel.disconnect(),",
+    "      clearInterval(officeRecoveryTimer);\n      try { await officeNative?.close(); } catch (error) { log.fail(\"office-native\", error, { step: \"close\" }); } // OFFICE_PATCH:native-close\n      const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([\n        channel.disconnect(),",
+    "native-close");
+  patched = replaceExactlyOnce(patched,
+    `  await channel.connect();\n  if (isOfficeRuntime()) {\n    const normalizeRecoverySource = (source) => normalize({\n      sender: { sender_id: { open_id: source.sender.id }, sender_type: "user" },\n      message: { message_id: source.message_id, chat_id: source.chat_id, chat_type: "p2p", message_type: source.msg_type, content: source.body.content, create_time: String(source.create_time), mentions: source.mentions, parent_id: source.parent_id, root_id: source.root_id, thread_id: source.thread_id }\n    }, { botIdentity: channel.botIdentity ?? { openId: "", name: "" }, stripBotMentions: false }); // OFFICE_PATCH:recovery-trusted-normalize\n    const recover = () => recoverOfficeMessages(channel, (msg) => intakeMessage({ channel, agent, sessions: sessions2, sessionCatalog, workspaces, activeRuns, pending, msg, controls, chatModeCache, logThreadModeOverride, executor, pool }), normalizeRecoverySource).catch(() => log.warn("office-recovery", "recover-deferred", {}));\n    await recover();\n    const recoveryTimer = setInterval(recover, 30000);\n    recoveryTimer.unref?.();\n  } // OFFICE_PATCH:recovery-inbox`,
+    `  await channel.connect();\n  officeNative?.setChannel(channel);\n  await officeNative?.initialize(); // OFFICE_PATCH:native-connected\n  let officeRecoveryTimer;\n  if (isOfficeRuntime()) {\n    const normalizeRecoverySource = (source) => normalize({\n      sender: { sender_id: { open_id: source.sender.id }, sender_type: "user" },\n      message: { message_id: source.message_id, chat_id: source.chat_id, chat_type: "p2p", message_type: source.msg_type, content: source.body.content, create_time: String(source.create_time), mentions: source.mentions, parent_id: source.parent_id, root_id: source.root_id, thread_id: source.thread_id }\n    }, { botIdentity: channel.botIdentity ?? { openId: "", name: "" }, stripBotMentions: false }); // OFFICE_PATCH:recovery-trusted-normalize\n    const recover = () => recoverOfficeMessages(channel, (msg) => intakeMessage({ channel, media, officeNative, agent, sessions: sessions2, sessionCatalog, workspaces, activeRuns, pending, msg, controls, chatModeCache, logThreadModeOverride, executor, pool }), normalizeRecoverySource).catch(() => log.warn("office-recovery", "recover-deferred", {}));\n    await recover();\n    officeRecoveryTimer = setInterval(recover, 30000);\n    officeRecoveryTimer.unref?.();\n  } // OFFICE_PATCH:recovery-inbox`,
+    "native-connected");
+  for (const marker of [v4Marker, "OFFICE_PATCH:native-import", "OFFICE_PATCH:native-create",
+    "OFFICE_PATCH:native-live-intake", "OFFICE_PATCH:native-direct-intake",
+    "OFFICE_PATCH:native-connected", "OFFICE_PATCH:native-close", "OFFICE_PATCH:native-command"]) {
+    if (!patched.includes(marker)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -515,7 +587,8 @@ async function writeTextAtomic(path, text) {
 async function ensureOfficeCli(assistant) {
   const v1Expected = await buildExpectedOfficeCliV1();
   const v2Expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
-  const expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
+  const v3Expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
+  const expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -523,7 +596,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }
