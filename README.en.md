@@ -17,8 +17,8 @@ profiles and reply as the bot.
   configuration.
 - Handles bot direct messages by default. Group messages and group history are
   disabled in the example configuration.
-- Uses the bot identity at runtime and verifies the intended owner separately
-  during setup.
+- Uses the bot identity for message transport and verifies the intended owner
+  separately during setup. Office user CLI identity needs separate owner approval.
 - Offers an advanced, experimental per-assistant visibility mirror that
   requires a separate trusted Desktop control anchor; it is not an automatic
   sidebar import.
@@ -36,8 +36,13 @@ profiles and reply as the bot.
 - Office assistants check the Codex executable at construction, availability
   checks, and execution. A missing versioned Desktop binary can recover under
   narrow conditions, and generated runtime copies upgrade only from a
-  reproducible, matching v1/v2/v3 copy to v4. See
+  reproducible, matching v1/v2/v3/v4 copy to v5. See
   [Office update recovery](docs/setup.md#office-recovery-after-updates-and-reboots).
+- Office CLI identity defaults to `bot-only`. A verified assistant can opt into
+  `user-default` only with explicit approval matching its verified owner; Office
+  never automatically imports local user credentials. OAuth identity and actual
+  scopes still require separate verification. See
+  [owner-approved CLI identity](docs/setup.md#optional-owner-approved-user-cli-identity).
 - Explicitly opt an Office assistant into an existing native Codex Desktop
   thread to use its shared tools, skills and authorization while retaining
   verified bot, owner and direct-message delivery bindings. Stop/status steering
@@ -125,7 +130,7 @@ The default minimum Feishu/Lark permissions are bot scopes
 `contact:user.employee:readonly` used only for setup-time identity checks.
 Enable the bot capability, subscribe to the `im.message.receive_v1`
 long-connection event, and publish an app version. The event subscription is
-not an API scope. User OAuth is only for setup-time identity verification;
+not an API scope. In the default flow, user OAuth is only for setup-time identity verification;
 runtime messaging uses the bot identity. See the [permission checklist](docs/permissions.md).
 
 ## Common commands

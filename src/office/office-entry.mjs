@@ -23,6 +23,7 @@ const PATCHSET_V1 = "office-runtime-v1";
 const PATCHSET = "office-runtime-v2";
 const PATCHSET_CURRENT = "office-runtime-v3";
 const PATCHSET_NATIVE = "office-runtime-v4";
+const PATCHSET_APPROVED_IDENTITY = "office-runtime-v5";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -572,6 +573,32 @@ function upgradeExpectedOfficeCliV3ToV4(v3Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV4ToV5(v4Expected) {
+  const v4Marker = `// OFFICE_PATCHSET:${PATCHSET_NATIVE}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v5Marker = `// OFFICE_PATCHSET:${PATCHSET_APPROVED_IDENTITY}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v4Expected, v4Marker, v5Marker, "patchset-marker-v5");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET_NATIVE}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_APPROVED_IDENTITY}:policy-import`, "policy-import-marker-v5");
+  patched = replaceExactlyOnce(patched,
+    "  if (isOfficeRuntime()) identityPreset = \"bot-only\"; // OFFICE_PATCH:bot-only-identity",
+    "  if (isOfficeRuntime()) identityPreset = loadOfficeAssistantFromProcess({ requireReady: true }).larkCliIdentityPreset; // OFFICE_PATCH:approved-cli-identity",
+    "approved-cli-identity");
+  patched = replaceExactlyOnce(patched,
+    "function shouldAttemptLocalUserImport(opts) {\n  return opts.profileConfig !== void 0 && !shouldSkipLocalUserImport(opts.profileConfig.larkCli);",
+    "function shouldAttemptLocalUserImport(opts) {\n  if (isOfficeRuntime()) return false; // OFFICE_PATCH:no-local-user-import\n  return opts.profileConfig !== void 0 && !shouldSkipLocalUserImport(opts.profileConfig.larkCli);",
+    "no-local-user-import");
+  patched = replaceExactlyOnce(patched,
+    "  const larkCliIdentity = isOfficeRuntime() ? \"bot-only\" : rawLarkCliIdentity === \"user-default\" || rawLarkCliIdentity === \"bot-only\" ? rawLarkCliIdentity : ctx.controls.profileConfig.larkCli.identityPreset; // OFFICE_PATCH:bot-only-form",
+    "  const larkCliIdentity = isOfficeRuntime() ? loadOfficeAssistantFromProcess({ requireReady: true }).larkCliIdentityPreset : rawLarkCliIdentity === \"user-default\" || rawLarkCliIdentity === \"bot-only\" ? rawLarkCliIdentity : ctx.controls.profileConfig.larkCli.identityPreset; // OFFICE_PATCH:approved-cli-identity-form",
+    "approved-cli-identity-form");
+  for (const marker of [v5Marker, "OFFICE_PATCH:approved-cli-identity",
+    "OFFICE_PATCH:no-local-user-import", "OFFICE_PATCH:approved-cli-identity-form"]) {
+    if (!patched.includes(marker)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -588,7 +615,8 @@ async function ensureOfficeCli(assistant) {
   const v1Expected = await buildExpectedOfficeCliV1();
   const v2Expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
   const v3Expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
-  const expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
+  const v4Expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
+  const expected = upgradeExpectedOfficeCliV4ToV5(v4Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -596,7 +624,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }

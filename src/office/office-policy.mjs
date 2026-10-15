@@ -159,12 +159,24 @@ export function loadOfficeAssistant(key, { requireReady = false } = {}) {
   const identityReady = identityIsReady(config, paths);
   if (requireReady && !identityReady) throw new Error('assistant identity is not verified and enabled');
 
+  const larkCliIdentityPreset = config.larkCliIdentityPreset === undefined ? 'bot-only' : config.larkCliIdentityPreset;
+  if (larkCliIdentityPreset !== 'bot-only' && larkCliIdentityPreset !== 'user-default') {
+    throw new Error('assistant CLI identity preset is invalid');
+  }
+  if (larkCliIdentityPreset === 'user-default' && (
+    config.userAuthSetupApproved !== true || !identityReady ||
+    config.userCliApprovedOpenId !== config.allowedOpenId
+  )) {
+    throw new Error('assistant user CLI identity is not explicitly approved for the verified user');
+  }
+
   return Object.freeze({
     ...paths,
     codexBinaryPath: typeof config.codexBinaryPath === 'string' ? config.codexBinaryPath : null,
     allowedOpenId: typeof config.allowedOpenId === 'string' ? config.allowedOpenId : null,
     enabled: config.enabled === true,
     identityVerified: config.identityVerified === true,
+    larkCliIdentityPreset,
     ready: identityReady,
     profileCliConfigPath: paths.profileCliConfigPath,
   });
@@ -390,6 +402,12 @@ export function enforceOfficeProfilePolicy(profileConfig, { profile, rootDir, co
   const defaultSandbox = defaultAccess === 'read-only' ? 'read-only' : 'workspace-write';
   profileConfig.sandbox = { default: defaultSandbox, max: 'workspace-write', defaultMode: defaultSandbox, maxMode: 'workspace-write' };
   profileConfig.codex = { ...profileConfig.codex, codexHome: void 0, inheritCodexHome: true, ignoreUserConfig: false, ignoreRules: false };
-  profileConfig.larkCli = { identityPreset: 'bot-only', localUserImport: { status: 'not-needed', reason: 'manual-bot-only' } };
+  profileConfig.larkCli = {
+    identityPreset: assistant.larkCliIdentityPreset,
+    localUserImport: {
+      status: 'not-needed',
+      reason: assistant.larkCliIdentityPreset === 'user-default' ? 'manual-user-default' : 'manual-bot-only',
+    },
+  };
   return profileConfig;
 }
