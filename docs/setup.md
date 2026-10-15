@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1, v2, v3 or v4 to v5 only when its bytes match the corresponding content
+upgrade from v1, v2, v3, v4 or v5 to v6 only when its bytes match the corresponding content
 rebuilt from the pinned upstream package at the current installation location.
-A v5 copy is reused only when it matches the expected content. Unknown/manual changes
+A v6 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -396,6 +396,25 @@ automatically imports a local/global user credential. The owner-identity setup
 commands above restore bot-only policy, so complete those checks before this
 opt-in and use the normal `office stop <key>` / `office start <key>` lifecycle.
 Keep approval identifiers, profile configuration and auth logs out of source control.
+
+For an approved `user-default` CLI task, runtime v6 performs a host preflight
+before starting the model: `auth status --json`, then the fixed read-only
+`GET /open-apis/authen/v1/user_info --as user`, then `auth status --json` again.
+It requires the verified app/owner binding and existing matching tenant/union-ID
+baseline, compares all three user identity fields, and requires a valid token
+after the API call. The host CLI can refresh its own protected credential during
+that call; the bridge neither copies credentials nor changes them to plaintext.
+Missing approval, identity mismatch, invalid status, timeout or uncertain process
+closure blocks model launch. The default remains `bot-only`.
+
+The host executable is fixed at
+`%LOCALAPPDATA%\Programs\nodejs\node_modules\@larksuite\cli\bin\lark-cli.exe`;
+model output, run options and `PATH` cannot select it. The commands use only this
+assistant's private profile. Concurrent preflights share one bounded operation
+per profile, and cancellation preserves the existing startup retry boundary.
+This addresses the task launch boundary only: a long task can outlive its token
+and still encounter a later sandbox credential-refresh failure. It does not
+prove task completion, scope sufficiency or actual message delivery.
 
 The Feishu app must have the scopes, `im.message.receive_v1` long-connection
 subscription, bot capability, and published visibility described in
