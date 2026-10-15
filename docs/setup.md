@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1, v2 or v3 to v4 only when its bytes match the corresponding content
+upgrade from v1, v2, v3 or v4 to v5 only when its bytes match the corresponding content
 rebuilt from the pinned upstream package at the current installation location.
-A v4 copy is reused only when it matches the expected content. Unknown/manual changes
+A v5 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -324,7 +324,7 @@ to:
 
 This local approval authorizes only the minimal owner-identity check described
 in [the permissions checklist](permissions.md). It does not authorize
-message handling as the user. Runtime is kept bot-only, and the verifier
+message handling as the user. Runtime defaults to bot-only, and the verifier
 restores bot-only mode after checking the identity. If you do not approve this
 check, leave the field `false` and do not run the following authorization
 commands.
@@ -365,6 +365,37 @@ unchanged. Then run `office-auth login` and `office-auth verify` again. If
 verification still fails, leave the profile disabled and resolve the identity
 source with an administrator; do not copy values from the failed candidate
 response into verified fields.
+
+### Optional owner-approved user CLI identity
+
+Office runtime v5 supports a separate, explicit user CLI opt-in after the owner
+has confirmed that the assistant may use their Feishu user permissions. In the
+private `assistant.json`, the optional fields are:
+
+```json
+{
+  "larkCliIdentityPreset": "user-default",
+  "userAuthSetupApproved": true,
+  "userCliApprovedOpenId": "<verified-allowedOpenId>"
+}
+```
+
+Replace the placeholder locally with the assistant's already verified
+`allowedOpenId`, only after that person's explicit approval. The assistant must
+also be enabled and pass all existing identity and mapping checks; missing or
+mismatched approval blocks `user-default`. Omit `larkCliIdentityPreset` or set it
+to `bot-only` to retain the default. The profile policy, CLI identity application
+and settings form all use this same descriptor choice. This does not change the
+bot transport, owner allowlist or direct-message delivery binding.
+
+These fields record approval; they do not perform OAuth or prove that a token
+has the required scopes. Complete the intended owner's interactive authorization
+inside this assistant's private CLI profile and separately verify its identity
+and the scopes required by the authorized task. Office runtime never
+automatically imports a local/global user credential. The owner-identity setup
+commands above restore bot-only policy, so complete those checks before this
+opt-in and use the normal `office stop <key>` / `office start <key>` lifecycle.
+Keep approval identifiers, profile configuration and auth logs out of source control.
 
 The Feishu app must have the scopes, `im.message.receive_v1` long-connection
 subscription, bot capability, and published visibility described in
