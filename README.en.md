@@ -36,13 +36,18 @@ profiles and reply as the bot.
 - Office assistants check the Codex executable at construction, availability
   checks, and execution. A missing versioned Desktop binary can recover under
   narrow conditions, and generated runtime copies upgrade only from a
-  reproducible, matching v1/v2/v3/v4 copy to v5. See
+  reproducible, matching v1/v2/v3/v4/v5 copy to v6. See
   [Office update recovery](docs/setup.md#office-recovery-after-updates-and-reboots).
 - Office CLI identity defaults to `bot-only`. A verified assistant can opt into
   `user-default` only with explicit approval matching its verified owner; Office
   never automatically imports local user credentials. OAuth identity and actual
   scopes still require separate verification. See
   [owner-approved CLI identity](docs/setup.md#optional-owner-approved-user-cli-identity).
+- Approved user CLI tasks run a fixed host CLI status/user-info/status preflight
+  before model launch, checking the app, owner and existing tenant/union-ID baseline.
+  The CLI can refresh its protected credential; the bridge neither copies it nor
+  changes it to plaintext. This covers one launch boundary; long tasks can still
+  outlive the token.
 - Explicitly opt an Office assistant into an existing native Codex Desktop
   thread to use its shared tools, skills and authorization while retaining
   verified bot, owner and direct-message delivery bindings. Stop/status steering

@@ -24,6 +24,7 @@ const PATCHSET = "office-runtime-v2";
 const PATCHSET_CURRENT = "office-runtime-v3";
 const PATCHSET_NATIVE = "office-runtime-v4";
 const PATCHSET_APPROVED_IDENTITY = "office-runtime-v5";
+const PATCHSET_USER_AUTH = "office-runtime-v6";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -599,6 +600,30 @@ function upgradeExpectedOfficeCliV4ToV5(v4Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV5ToV6(v5Expected) {
+  const officeStartupRetryUrl = JSON.stringify(new URL("./office-startup-retry.mjs", import.meta.url).href);
+  const officeUserAuthUrl = JSON.stringify(new URL("./office-user-auth.mjs", import.meta.url).href);
+  const v5Marker = `// OFFICE_PATCHSET:${PATCHSET_APPROVED_IDENTITY}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v6Marker = `// OFFICE_PATCHSET:${PATCHSET_USER_AUTH}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v5Expected, v5Marker, v6Marker, "patchset-marker-v6");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET_APPROVED_IDENTITY}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_USER_AUTH}:policy-import`, "policy-import-marker-v6");
+  patched = replaceExactlyOnce(patched,
+    `import { createOfficeStartupProof, createOfficeStartupRetryRun } from ${officeStartupRetryUrl}; // OFFICE_PATCH:startup-retry-import`,
+    `import { createOfficeStartupProof, createOfficeStartupRetryRun } from ${officeStartupRetryUrl}; // OFFICE_PATCH:startup-retry-import\nimport { createOfficeUserAuthRun } from ${officeUserAuthUrl}; // OFFICE_PATCH:user-auth-import`,
+    "user-auth-import");
+  patched = replaceExactlyOnce(patched,
+    '  run(opts) {\n    if (isOfficeRuntime() && opts.officeStartupAttempt !== true) {\n      return createOfficeStartupRetryRun(opts, (attemptOpts) => this.run({ ...attemptOpts, officeStartupAttempt: true }), (fields) => log.info("office-startup-retry", "retry-started", fields));\n    } // OFFICE_PATCH:startup-retry-boundary',
+    '  run(opts) {\n    if (isOfficeRuntime() && opts.officeUserAuthAttempt !== true) {\n      return createOfficeUserAuthRun(opts, (attemptOpts) => this.run({ ...attemptOpts, officeUserAuthAttempt: true }));\n    } // OFFICE_PATCH:user-auth-boundary\n    if (isOfficeRuntime() && opts.officeStartupAttempt !== true) {\n      return createOfficeStartupRetryRun(opts, (attemptOpts) => this.run({ ...attemptOpts, officeStartupAttempt: true }), (fields) => log.info("office-startup-retry", "retry-started", fields));\n    } // OFFICE_PATCH:startup-retry-boundary',
+    "user-auth-boundary");
+  for (const marker of [v6Marker, "OFFICE_PATCH:user-auth-import",
+    "OFFICE_PATCH:user-auth-boundary", "OFFICE_PATCH:startup-retry-boundary"]) {
+    if (!patched.includes(marker)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -616,7 +641,8 @@ async function ensureOfficeCli(assistant) {
   const v2Expected = upgradeExpectedOfficeCliV1ToV2(v1Expected);
   const v3Expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
   const v4Expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
-  const expected = upgradeExpectedOfficeCliV4ToV5(v4Expected);
+  const v5Expected = upgradeExpectedOfficeCliV4ToV5(v4Expected);
+  const expected = upgradeExpectedOfficeCliV5ToV6(v5Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -624,7 +650,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected) || currentHash === sha256(v5Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }
