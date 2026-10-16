@@ -53,6 +53,12 @@ profiles and reply as the bot.
   The CLI can refresh its protected credential; the bridge neither copies it nor
   changes it to plaintext. This covers one launch boundary; long tasks can still
   outlive the token.
+- Approved user CLI profiles can complete a trusted operator's pending Minutes
+  OAuth flow on the host for exactly `minutes:minutes.basic:read` and
+  `minutes:minutes.upload:write`. Original owner-message and precise-time checks,
+  persistent nonce claims and full credential/scope verification guard completion;
+  uncertain outcomes are not retried automatically. See
+  [Minutes OAuth completion](docs/setup.md#optional-host-completion-of-minutes-oauth).
 - Explicitly opt an Office assistant into an existing native Codex Desktop
   thread to use its shared tools, skills and authorization while retaining
   verified bot, owner and direct-message delivery bindings. Stop/status steering

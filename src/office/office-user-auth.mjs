@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, join, resolve } from "node:path";
 import { loadOfficeAssistantFromProcess } from "./office-policy.mjs";
+import { completeOfficePendingOAuth } from "./office-user-oauth.mjs";
 
 const STATUS_ARGS = Object.freeze(["auth", "status", "--json"]);
 const USER_INFO_ARGS = Object.freeze(["api", "GET", "/open-apis/authen/v1/user_info", "--as", "user", "--json"]);
@@ -55,8 +56,10 @@ async function loadContext() {
     key: assistant.profileCliConfigPath.toLowerCase(), fingerprint: JSON.stringify(identity) };
 }
 
-function runCli(context, args, signal) {
+function runCli(context, args, signal, { parseJson = true } = {}) {
   if (signal.aborted) return Promise.reject(fail("stopped"));
+  if (!parseJson && (args.length !== 5 || args[0] !== "auth" || args[1] !== "login" ||
+      args[2] !== "--device-code" || typeof args[3] !== "string" || args[4] !== "--json")) return Promise.reject(fail("oauth-config"));
   return new Promise((resolvePromise, reject) => {
     let child;
     try {
@@ -76,6 +79,13 @@ function runCli(context, args, signal) {
       signal.removeEventListener("abort", abort);
       if (failure) { reject(failure); return; }
       if (code !== 0) { reject(fail("cli-exit")); return; }
+      if (!parseJson) {
+        let response;
+        try { response = JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch {}
+        if (record(response) && response.ok === false) { reject(fail("oauth-completion")); return; }
+        resolvePromise({ completedExitZero: true });
+        return;
+      }
       try { resolvePromise(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
       catch { reject(fail("json")); }
     };
@@ -124,31 +134,58 @@ function checkStatus(status, context, after) {
   return Date.parse(user.expiresAt);
 }
 
-async function preflight(context, signal) {
+async function verifyCredentials(context, signal, scopes = []) {
   checkStatus(await runCli(context, STATUS_ARGS, signal), context, false);
   const response = await runCli(context, USER_INFO_ARGS, signal);
   if (!record(response) || response.ok !== true || response.identity !== "user" || !record(response.data)) throw fail("api");
   const user = response.data;
   if (user.open_id !== context.identity.openId || user.tenant_key !== context.identity.tenantKey ||
       user.union_id !== context.identity.unionId) throw fail("identity");
-  const expiresAt = checkStatus(await runCli(context, STATUS_ARGS, signal), context, true);
+  const status = await runCli(context, STATUS_ARGS, signal);
+  const expiresAt = checkStatus(status, context, true);
+  if (scopes.length > 0) {
+    if (typeof status.identities.user.scope !== "string") throw fail("oauth-scopes");
+    const storedScopes = new Set(status.identities.user.scope.split(/[\s,]+/).filter(Boolean));
+    if (!scopes.every((scope) => storedScopes.has(scope))) throw fail("oauth-scopes");
+  }
   // This validates one launch boundary. A long model task may outlive the token;
   // this helper performs no polling and cannot repair an in-sandbox later refresh.
   return expiresAt;
 }
 
-function acquire(context) {
+async function preflight(context, signal, opts) {
+  const completedExpiry = await completeOfficePendingOAuth(context, signal, opts, { runCli, fail, verifyCredentials,
+    verifyBeforeCompletion: async () => checkStatus(await runCli(context, STATUS_ARGS, signal), context, false) });
+  return completedExpiry ?? verifyCredentials(context, signal);
+}
+
+function acquire(context, opts) {
   if (uncertainProfiles.has(context.key)) throw fail("close-timeout");
   let flight = flights.get(context.key);
   if (flight && flight.fingerprint !== context.fingerprint) throw fail("config");
   if (!flight) {
     const controller = new AbortController();
-    flight = { controller, fingerprint: context.fingerprint, waiters: 0, settled: false };
+    flight = { controller, fingerprint: context.fingerprint, waiters: 0, settled: false, sources: new Set(), revision: 0 };
     flights.set(context.key, flight);
-    flight.promise = preflight(context, controller.signal).finally(() => {
+    flight.promise = Promise.resolve().then(async () => {
+      let expiresAt;
+      let checked;
+      let rounds = 0;
+      do {
+        if (++rounds > 4) throw fail("oauth-busy");
+        checked = flight.revision;
+        expiresAt = await preflight(context, controller.signal, { officeSourceMessageIds: [...flight.sources] });
+      } while (checked !== flight.revision);
+      return expiresAt;
+    }).finally(() => {
       flight.settled = true;
       if (flights.get(context.key) === flight) flights.delete(context.key);
     });
+  }
+  if (Array.isArray(opts?.officeSourceMessageIds)) {
+    for (const source of opts.officeSourceMessageIds) {
+      if (!flight.sources.has(source)) { flight.sources.add(source); flight.revision += 1; }
+    }
   }
   flight.waiters += 1;
   let released = false;
@@ -177,7 +214,7 @@ export function createOfficeUserAuthRun(opts, runOnce) {
       const context = await loadContext();
       if (interrupted) throw fail("stopped");
       if (context.required) {
-        lease = acquire(context);
+        lease = acquire(context, opts);
         let expiresAt;
         try {
           expiresAt = await Promise.race([lease.promise, cancelled.then(() => { throw fail("stopped"); })]);
