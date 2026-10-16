@@ -21,6 +21,7 @@
 - Desktop 适配器可在受限条件下恢复桌面更新后失效的 Codex 程序路径，并核验当前环境提供的连接端点。更新源码后需重新运行 `desktop prepare`；恢复条件与失败处理见 [Desktop 更新恢复](docs/desktop-experimental.md#recovery-after-desktop-updates)。
 - 办公助手在启动、可用性检查和实际执行时核对 Codex 程序路径，受限恢复版本目录轮换造成的失效；生成运行文件仅从可重建并匹配的 v1/v2/v3/v4/v5 副本升级到 v6。见 [办公助手更新恢复](docs/setup.md#office-recovery-after-updates-and-reboots)。
 - 办公助手默认保持 `bot-only`；可在身份核验通过后显式批准 `user-default`，批准用户必须与已核验所有者精确一致，且不自动导入本机用户凭据。OAuth 与实际权限仍需单独核验。见 [用户 CLI 身份](docs/setup.md#optional-owner-approved-user-cli-identity)。
+- 已批准用户 CLI 可由宿主保存可信操作者创建的妙记 OAuth 待完成流程，仅允许 `minutes:minutes.basic:read` 与 `minutes:minutes.upload:write`。兑换须核对真实所有者原消息及精确时间，持久 claim 阻止同 nonce 重放；不确定结果不自动重试，完成后仍核验身份、token 与范围。见 [妙记授权保存](docs/setup.md#optional-host-completion-of-minutes-oauth)。
 - 显式批准的用户 CLI 任务会在模型启动前，通过固定宿主 CLI 执行状态、只读用户信息、状态三步预检，核对 app、所有者及租户/union-ID 基线，并允许 CLI 自行刷新受保护凭据。桥接不拷贝凭据或改为明文；此机制只覆盖启动边界，长任务跨有效期仍可能受限。
 - 可显式启用办公助手连接既有 Codex 原生会话，使用该会话共享的工具、技能和授权，同时保留机器人、用户和私聊收件人绑定。包含 `/stop`、`/status` 转发和受控附件回传；配置与验证边界见 [原生 Codex 执行](docs/setup.md#optional-native-codex-desktop-execution)。
 

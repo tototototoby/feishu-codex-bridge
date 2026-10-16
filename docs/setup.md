@@ -416,6 +416,49 @@ This addresses the task launch boundary only: a long task can outlive its token
 and still encounter a later sandbox credential-refresh failure. It does not
 prove task completion, scope sufficiency or actual message delivery.
 
+### Optional host completion of Minutes OAuth
+
+An already approved `user-default` profile can save a pending interactive Minutes
+authorization on the host before model launch. This optional path accepts exactly
+the two scopes `minutes:minutes.basic:read` and `minutes:minutes.upload:write`;
+it cannot begin a flow or add other scopes. A trusted local operator must create
+the flow using the intended assistant's private CLI profile and store its pending
+record at `<assistant-bridge-home>/.office-user-oauth.json`. The record binds the
+app, owner, original chat, creation/expiry times, requested scopes and device nonce.
+The private flow creator and any authorization-message sender are not distributed
+in this repository. Keep the pending record, nonce, credentials and receipt logs
+outside source control and out of model prompts.
+
+Only source message IDs supplied by the existing host intake are considered.
+The host reads those exact messages as the bot, then reads the matching raw
+message to verify the owner, tenant, chat, unquoted text confirmation and precise
+13-digit creation time. Confirmation must fall within this flow's time window;
+quoted replies, prompt text and minute-formatted shortcut timestamps do not
+authorize completion. The profile's existing app/owner identity policy still
+applies.
+
+Before exchanging the device nonce, the host creates a persistent exclusive
+`wx` claim keyed by app, owner and nonce, and persists `completion-started`.
+Changing the creation time cannot replay the same nonce. Claims are never
+automatically deleted, including partial writes, crashes and failed exchanges.
+The only OAuth mutation is completion of this existing device flow using the
+fixed host CLI; the model cannot select the command or expand its scopes.
+
+Completion requires exit code zero followed by the full status/user-info/status
+postcondition: verified app/owner/tenant/union identity, valid token and both
+requested scopes present in the stored profile. Success persists `completed`
+and removes the device nonce from that record. Later preflights resume from the
+completed state by verifying credentials and scopes again, without replaying the
+exchange. Failure or uncertainty blocks automatic retry; an operator must inspect
+the saved state and create a new flow with a new nonce when recovery is needed.
+Do not delete a claim or edit timestamps to force another exchange.
+
+The model-visible `work/office-user-auth-status.json` contains only status,
+requested scopes, update time and an error category. A status-file publication
+failure does not change a completed OAuth outcome. These are source-level
+guarantees and recovery rules; publishing this code does not establish that a
+real OAuth flow, protected credential save or Minutes operation has succeeded.
+
 The Feishu app must have the scopes, `im.message.receive_v1` long-connection
 subscription, bot capability, and published visibility described in
 [permissions.md](permissions.md). `offline_access` is not needed for bot
