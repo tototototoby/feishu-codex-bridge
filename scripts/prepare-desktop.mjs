@@ -29,7 +29,62 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return patched;
+  return applyMemberImagesPatch(patched);
+}
+
+function applyMemberImagesPatch(source) {
+  const replacements = [
+    ['import { configuredMcpServerNames, buildMemberCommandArgs } from "__DESKTOP_MODULES__/member-runtime.mjs";',
+      'import { configuredMcpServerNames, buildMemberCommandArgs, buildMemberProcessEnv } from "__DESKTOP_MODULES__/member-runtime.mjs";'],
+    ['import { prepareGroupAttachments } from "__DESKTOP_MODULES__/group-attachments.mjs";',
+      'import { prepareGroupAttachments } from "__DESKTOP_MODULES__/group-attachments.mjs";\nimport { createMemberImageContext, isMemberImageContext, configureMemberImageRun, captureMemberImageEvent, finalizeMemberImages, enqueueMemberImages, verifyMemberImageSource } from "__DESKTOP_MODULES__/group-member-images.mjs";'],
+    ['  isFixedGroupScope,\n  loadFixedGroupControl,',
+      '  isFixedGroupScope,\n  isAllowedMemberImageRequest,\n  loadFixedGroupControl,'],
+    ['      replyOnly: opts.replyOnly === true,\n      disabledMcpServers',
+      '      replyOnly: opts.replyOnly === true,\n      memberImagesEnabled: opts.replyOnly === true && isMemberImageContext(opts.memberImageContext),\n      disabledMcpServers'],
+    ['    const childEnv = mergeProcessEnv(process.env, envOverrides);\n    if (opts.replyOnly) for (const key of Object.keys(childEnv)) {\n      if (/^(LARK_|LARKSUITE_|CODEX_APP_TOOLS_|CODEX_APP_INTERNAL_)/i.test(key)) delete childEnv[key];\n    }',
+      '    const childEnv = opts.replyOnly ? buildMemberProcessEnv(process.env, envOverrides) : mergeProcessEnv(process.env, envOverrides);\n    if (opts.memberImageContext) {\n      if (!opts.replyOnly) throw new Error("member-image-run-requires-reply-only");\n      configureMemberImageRun(opts.memberImageContext, { cwd: opts.cwd,\n        codexHome: envOverrides.CODEX_HOME || childEnv.CODEX_HOME || join(homedir2(), ".codex") });\n    }'],
+    ['      events: createEventStream2(child, stderrChunks, () => runtimeError, () => stopReason),',
+      '      events: createEventStream2(child, stderrChunks, () => runtimeError, () => stopReason, opts.memberImageContext),'],
+    ['      replyOnly: input.replyOnly === true,\n      images: input.capability.agentId',
+      '      replyOnly: input.replyOnly === true,\n      memberImageContext: input.memberImageContext,\n      images: input.capability.agentId'],
+    ['      replyOnly: input.replyOnly === true,\n      images: input.images,',
+      '      replyOnly: input.replyOnly === true,\n      memberImageContext: input.memberImageContext,\n      images: input.images,'],
+    ['          groupControlReady\n          });',
+      '          groupControlReady,\n          groupMedia\n          });'],
+    // Retain the loader-created control object so its private binding proof survives.
+    ['      return { ...groupControl, recordHistory: Boolean(groupRecorder) };',
+      '      groupControl.recordHistory = Boolean(groupRecorder);\n      return groupControl;'],
+    ['  let groupContext = null;\n  let replyOnly = false;',
+      '  let groupContext = null;\n  let memberImageContext = null;\n  let replyOnly = false;'],
+    ['      groupContext = { source: "history-disabled", groupId: FIXED_GROUP_ID, syncStatus: null, messages: [] };\n    }\n  }',
+      '      groupContext = { source: "history-disabled", groupId: FIXED_GROUP_ID, syncStatus: null, messages: [] };\n    }\n    if (replyOnly && controls.profileConfig.agentKind === "codex" && isAllowedMemberImageRequest(lastMsg, originalControls.botOwnerId, groupControl)) {\n      memberImageContext = await createMemberImageContext({ control: groupControl, msg: lastMsg,\n        botOwnerId: originalControls.botOwnerId, channel, groupContext });\n    }\n  }'],
+    ['  } else if (groupRun && replyOnly) {\n    attachments = [];\n  }',
+      '  } else if (memberImageContext) {\n    attachments = await prepareGroupAttachments({ control: groupControl, msg: lastMsg, context: groupContext,\n      directAttachments: attachments, imageTask: memberImageContext, cliPath: groupControl.cliPath });\n  } else if (groupRun && replyOnly) {\n    attachments = [];\n  }'],
+    ['...groupReferenceInstructions(groupContext.syncStatus, { replyOnly })',
+      '...groupReferenceInstructions(groupContext.syncStatus, { replyOnly, memberImagesEnabled: Boolean(memberImageContext) })'],
+    ['    model: groupRun ? groupControl.groupModel : void 0,\n    replyOnly\n  });',
+      '    model: groupRun ? groupControl.groupModel : void 0,\n    replyOnly,\n    memberImageContext\n  });'],
+    ['  const reactionPromise = cotEnabled || replyMode === "card" ? void 0 : addWorkingReaction(channel, lastMsg.messageId);\n  try {\n    if (cotEnabled) {',
+      '  const reactionPromise = cotEnabled || replyMode === "card" ? void 0 : addWorkingReaction(channel, lastMsg.messageId);\n  try {\n    if (memberImageContext) {\n      // Final prose cannot nominate files for upload or establish image success.\n      const finalState = await processAgentStream(handle2, eventStream, scope, idleTimeoutMs, recordSession, async () => {});\n      if (handle2.interrupted || finalState.terminal !== "done") return;\n      await finalizeMemberImages(memberImageContext, { terminal: finalState.terminal, interrupted: handle2.interrupted });\n      const artifacts = await enqueueMemberImages({ context: memberImageContext, channel, groupMedia: deps.groupMedia });\n      if (artifacts.length) return;\n      await verifyMemberImageSource(memberImageContext);\n      if (memberImageContext.expectsImage || memberImageContext.imageAttempted) {\n        await channel.send(FIXED_GROUP_ID, { text: "本次没有取得通过校验、可回传的图片成品，做图尚未完成。请稍后继续当前任务。" }, sendOpts);\n      } else {\n        await sendFinalReply({ channel, chatId, scope, state: finalAnswerOnlyState(filterForPrefs(finalState)), replyMode, sendOpts, cardRenderOptions });\n      }\n      return;\n    }\n    if (cotEnabled) {'],
+  ];
+  for (let index = 0; index < replacements.length; index++) {
+    const [before, after] = replacements[index];
+    source = replaceExactOnce(source, before, after, `Member image patch anchor mismatch: ${index}`);
+  }
+  const start = source.indexOf('async function* createEventStream2(');
+  const end = source.indexOf('async function waitForExitCode(child)', start);
+  if (start < 0 || end <= start) throw new Error('Member image event stream anchor mismatch.');
+  const original = source.slice(start, end);
+  let stream = replaceExactOnce(original,
+    'async function* createEventStream2(child, stderrChunks, getError, getStopReason) {',
+    'async function* createEventStream2(child, stderrChunks, getError, getStopReason, memberImageContext) {',
+    'Member image event stream signature mismatch.');
+  stream = replaceExactOnce(stream,
+    '      yield* translator.translate(parsed);',
+    '      if (memberImageContext) await captureMemberImageEvent(memberImageContext, parsed);\n      yield* translator.translate(parsed);',
+    'Member image raw event anchor mismatch.');
+  return replaceExactOnce(source, original, stream, 'Member image event stream replacement mismatch.');
 }
 
 function replaceExactOnce(source, needle, replacement, errorMessage) {

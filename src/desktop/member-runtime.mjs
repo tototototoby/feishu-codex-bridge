@@ -16,14 +16,14 @@ export function buildMemberCommandArgs(input) {
   return ['exec', '--json', '--sandbox', 'read-only',
     ...(input.model ? ['--model', input.model] : []),
     ...(input.reasoningEffort ? ['-c', `model_reasoning_effort=${JSON.stringify(input.reasoningEffort)}`] : []),
-    ...memberRuntimeFlags(input.disabledMcpServers),
+    ...memberRuntimeFlags(input.disabledMcpServers, { memberImagesEnabled: input.memberImagesEnabled === true }),
     '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"',
     ...(input.ignoreUserConfig ? ['--ignore-user-config'] : []), '--ignore-rules', '--skip-git-repo-check', '-C', input.cwd,
     ...(input.images ?? []).flatMap((image) => ['--image', image]),
     ...((input.images ?? []).length ? ['--'] : []), '-'];
 }
 
-export function memberRuntimeFlags(disabledMcpServers = []) {
+export function memberRuntimeFlags(disabledMcpServers = [], { memberImagesEnabled = false } = {}) {
   for (const name of disabledMcpServers) if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error('unsupported-member-mcp-name');
   return [
     '--ephemeral',
@@ -37,6 +37,17 @@ export function memberRuntimeFlags(disabledMcpServers = []) {
       'goals', 'hooks', 'workspace_dependencies', 'in_app_local_automation', 'tool_suggest', 'memories',
       'view_image', 'sleep_tool', 'request_permissions_tool'
     ].flatMap((feature) => ['-c', `features.${feature}=false`]),
+    // Native imagegen needs the registered-tool host. Keep general code mode,
+    // shell execution, apps, plugins and MCP disabled above.
+    ...(memberImagesEnabled ? ['-c', 'features.code_mode_host=true', '-c', 'features.image_generation=true'] : []),
     '-c', 'features.skip_host_skill_discovery=true'
   ];
+}
+
+// Keep only OS/runtime, transport and model-provider credentials. In particular,
+// never inherit Feishu credentials, desktop app tools, or unrelated service keys.
+export function buildMemberProcessEnv(environment = process.env, overrides = {}) {
+  const allowed = /^(?:PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|SYSTEMDRIVE|TEMP|TMP|USERPROFILE|HOMEDRIVE|HOMEPATH|APPDATA|LOCALAPPDATA|PROGRAMDATA|PROGRAMFILES|PROGRAMFILES\(X86\)|COMMONPROGRAMFILES|COMMONPROGRAMFILES\(X86\)|PROCESSOR_ARCHITECTURE|NUMBER_OF_PROCESSORS|OS|USERNAME|USERDOMAIN|LANG|LC_ALL|LC_CTYPE|TZ|TERM|NO_COLOR|FORCE_COLOR|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|NO_PROXY|NODE_EXTRA_CA_CERTS|SSL_CERT_FILE|SSL_CERT_DIR|CODEX_HOME|OPENAI_API_KEY|OPENAI_BASE_URL|OPENAI_ORG_ID|OPENAI_PROJECT_ID|AZURE_OPENAI_API_KEY|AZURE_OPENAI_ENDPOINT|CODEX_API_KEY)$/i;
+  return Object.fromEntries(Object.entries({ ...environment, ...overrides })
+    .filter(([key, value]) => allowed.test(key) && typeof value === 'string'));
 }

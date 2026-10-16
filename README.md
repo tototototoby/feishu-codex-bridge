@@ -17,6 +17,7 @@
 - 办公助手任务开始即显示卡片，等待期间每 10 秒更新用时，公开进度及工具状态会原地刷新，最终结果保留在同一张卡片。
 - 同一桌面聊天可启用 `desktop.notifyCompletion`：处理结束后另发新消息提醒，保留发送状态以避免重连重复发送。
 - 可选的 Codex Desktop 适配器需要你另行安装的 Codex Desktop/App Tools，属于实验性、版本敏感功能；本仓库不包含 Desktop helper/plugin。详见 [Desktop 实验功能](docs/desktop-experimental.md)。
+- 配置群可显式启用 `memberImagesEnabled`，让真实 @ 助手的普通成员使用原生图片生成/编辑。成员仍使用临时只读会话，其他执行、管理、外部写入工具保持禁用；宿主只回传本次成功生成并校验的图片。见 [群成员图片](docs/desktop-experimental.md#optional-group-member-images)。
 - Desktop 适配器可在受限条件下恢复桌面更新后失效的 Codex 程序路径，并核验当前环境提供的连接端点。更新源码后需重新运行 `desktop prepare`；恢复条件与失败处理见 [Desktop 更新恢复](docs/desktop-experimental.md#recovery-after-desktop-updates)。
 - 办公助手在启动、可用性检查和实际执行时核对 Codex 程序路径，受限恢复版本目录轮换造成的失效；生成运行文件仅从可重建并匹配的 v1/v2/v3/v4/v5 副本升级到 v6。见 [办公助手更新恢复](docs/setup.md#office-recovery-after-updates-and-reboots)。
 - 办公助手默认保持 `bot-only`；可在身份核验通过后显式批准 `user-default`，批准用户必须与已核验所有者精确一致，且不自动导入本机用户凭据。OAuth 与实际权限仍需单独核验。见 [用户 CLI 身份](docs/setup.md#optional-owner-approved-user-cli-identity)。

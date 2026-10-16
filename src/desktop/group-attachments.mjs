@@ -4,6 +4,7 @@ import { join, basename, extname, relative, isAbsolute, dirname } from 'node:pat
 import { createHash } from 'node:crypto';
 import crossSpawn from 'cross-spawn';
 import { FIXED_GROUP_ID, FIXED_OWNER_OPEN_ID } from './group-recorder.mjs';
+import { isMemberImageContext, memberImageFormat, stageMemberImageInputs, verifyMemberImageReference, verifyMemberImageSource } from './group-member-images.mjs';
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL = 75 * 1024 * 1024;
@@ -43,7 +44,8 @@ async function download(cliPath, directory, messageId, key, type, targetName) {
   });
 }
 
-export async function prepareGroupAttachments({ control, msg, context, directAttachments = [], cliPath }) {
+export async function prepareGroupAttachments({ control, msg, context, directAttachments = [], cliPath, imageTask }) {
+  if (imageTask) return prepareMemberImageAttachments({ control, msg, context, directAttachments, cliPath, imageTask });
   if (control?.groupId !== FIXED_GROUP_ID || context?.groupId !== FIXED_GROUP_ID || msg?.chatId !== FIXED_GROUP_ID || msg.senderId !== FIXED_OWNER_OPEN_ID) throw new Error('attachment-scope-mismatch');
   const root = await realpath(control.groupWorkspace);
   const input = await ownedDirectory(root, join(root, 'input'));
@@ -101,5 +103,49 @@ export async function prepareGroupAttachments({ control, msg, context, directAtt
     }
   }
   Object.defineProperties(accepted, { directAcceptedCount: { value: directAcceptedCount }, historyMissingCount: { value: historyMissingCount } });
+  return accepted;
+}
+
+async function prepareMemberImageAttachments({ control, msg, context, directAttachments, cliPath, imageTask }) {
+  if (!isMemberImageContext(imageTask) || control?.memberImagesEnabled !== true || control.groupId !== FIXED_GROUP_ID ||
+    msg?.chatId !== FIXED_GROUP_ID || context?.groupId !== FIXED_GROUP_ID || context !== imageTask.groupContext ||
+    imageTask.sourceMessageId !== msg.messageId || imageTask.senderId !== msg.senderId) throw new Error('member-attachment-scope-mismatch');
+  await verifyMemberImageSource(imageTask);
+  const direct = await stageMemberImageInputs(imageTask, directAttachments.filter((attachment) => attachment.sourceMessageId === msg.messageId));
+  const candidates = [];
+  const linked = msg.replyToMessageId || msg.rootId;
+  const wantsImage = imageTask.expectsImage || Boolean(linked);
+  let requestTime = Number(msg.createTime);
+  if (requestTime > 0 && requestTime < 100_000_000_000) requestTime *= 1000;
+  if (!Number.isFinite(requestTime) || requestTime <= 0) requestTime = Date.now();
+  const records = [...(context.messages || [])].reverse().filter((record) => !record.deleted && record.msgType === 'image' &&
+    (record.messageId === linked || wantsImage && Date.parse(record.timestamp) <= requestTime));
+  records.sort((left, right) => Number(right.messageId === linked) - Number(left.messageId === linked));
+  let missing = 0;
+  const seen = new Set();
+  for (const record of records.slice(0, 3)) {
+    for (const key of (record.attachmentRefs || []).slice(0, 1)) {
+      if (seen.has(key) || !/^img_[A-Za-z0-9_-]+$/.test(key)) continue;
+      seen.add(key);
+      try {
+        await verifyMemberImageReference(imageTask, record, key);
+        const name = `${createHash('sha256').update(record.messageId).update(key).digest('hex')}.jpg`;
+        const target = join(imageTask.inputDirectory, name);
+        await ownedTarget(imageTask.workspace, target);
+        await download(cliPath, imageTask.inputDirectory, record.messageId, key, 'image', name);
+        await ownedTarget(imageTask.workspace, target);
+        const size = (await stat(target)).size;
+        if (size < 4 || size > MAX_BYTES) throw new Error('member-attachment-size-invalid');
+        const bytes = await readFile(target);
+        const format = memberImageFormat(bytes);
+        candidates.push({ decision: 'accepted', absPath: target, originalName: `群参考图${format.extension}`,
+          kind: 'image', mime: format.mime, size, sourceMessageId: record.messageId });
+      } catch { missing++; }
+    }
+  }
+  const history = await stageMemberImageInputs(imageTask, candidates);
+  const accepted = [...new Map([...direct, ...history].map((attachment) => [attachment.hash, attachment])).values()];
+  Object.defineProperties(accepted, { directAcceptedCount: { value: direct.length },
+    historyMissingCount: { value: missing + candidates.length - history.length } });
   return accepted;
 }
