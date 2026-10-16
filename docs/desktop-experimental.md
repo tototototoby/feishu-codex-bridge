@@ -99,6 +99,58 @@ Desktop component, not a stable public transport contract.
 
 ## Data and limits
 
+### Optional group member images
+
+Group member image generation/editing is disabled by default. After the group
+owner explicitly approves it, set `memberImagesEnabled: true` in the private
+group control configuration (or private project `group` settings). The existing
+group must already be enabled and bound to its intended bot app, owner and
+workspace; member participation also requires `respondToOwnerOnly: false`.
+The image gate accepts only the control loaded with the running bot's matching
+app binding. A real user must actually mention that bot in the configured group;
+quoted mention text, group history and slash commands cannot grant capabilities.
+
+Members still use ephemeral Codex runs, a read-only sandbox, no session resume,
+ignored local rules and disabled shell/code execution, apps, plugins, MCP,
+browser, private history and administrative tools. Only native image generation
+is enabled for this opt-in path. The image profile enables the required local
+registered-tool host while general code mode remains disabled. The child receives
+a bounded environment
+allowlist for OS/runtime, provider and transport settings, without Feishu or
+Desktop App Tools credentials. This option does not grant group management or
+general external write permissions.
+
+The host reads back the triggering message and verifies the sender, group and
+actual mention. Accepted image references come from that message or verified
+images in this group's supplied recorder context. It stages them into a unique
+`input/<request-id>` directory and passes them as image inputs; arbitrary files
+and other groups' references are excluded. A manifest tracks input hashes and
+generated artifacts under this group's workspace.
+
+Completed native image events with a real `saved_path` register output first.
+Some CLI versions omit those events from `exec --json`; after a successful,
+uninterrupted run, compatibility collection uses only that ephemeral run's raw
+`thread.started` UUID to inspect the first level of its own
+`generated_images/<thread-id>` directory for `exec-<UUID>` images. Conflicting
+thread IDs block this path. It never searches the whole cache, selects the latest
+file or reads an image path from final prose. Collection considers at most 64
+matching candidates, with a shared limit of 8 images / 128 MiB total and 64 MiB
+per image across both event and compatibility paths.
+
+The host checks native image roots, symlinks, creation time, byte limits, image
+signatures and content hashes, then copies validated output into
+`output/<request-id>`. Final prose cannot nominate a path for upload. Return uses
+the existing group media outbox and the original triggering message; stopped,
+failed or timed-out runs do not enter the image return branch. Uncertain sends
+retain the existing no-automatic-duplicate behavior.
+
+Run `desktop prepare` and restart after updating the source so the generated
+adapter includes the integration. Native event formats and tool availability
+depend on the installed Codex version and provider. Static source review does
+not prove image generation or delivery: verify a real authorized request and
+its returned image separately. If no validated artifact is produced, the bridge
+reports that the image task remains incomplete.
+
 Historical thread pagination uses a 20,000-character per-item read limit to
 match the Codex Desktop App Tools API limit.
 
