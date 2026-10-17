@@ -160,6 +160,9 @@ export function loadOfficeAssistant(key, { requireReady = false } = {}) {
   if (requireReady && !identityReady) throw new Error('assistant identity is not verified and enabled');
 
   const larkCliIdentityPreset = config.larkCliIdentityPreset === undefined ? 'bot-only' : config.larkCliIdentityPreset;
+  if (config.liveInputEnabled !== undefined && typeof config.liveInputEnabled !== 'boolean') {
+    throw new Error('assistant live input setting is invalid');
+  }
   if (larkCliIdentityPreset !== 'bot-only' && larkCliIdentityPreset !== 'user-default') {
     throw new Error('assistant CLI identity preset is invalid');
   }
@@ -177,6 +180,7 @@ export function loadOfficeAssistant(key, { requireReady = false } = {}) {
     enabled: config.enabled === true,
     identityVerified: config.identityVerified === true,
     larkCliIdentityPreset,
+    liveInputEnabled: config.liveInputEnabled === true,
     ready: identityReady,
     profileCliConfigPath: paths.profileCliConfigPath,
   });
