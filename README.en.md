@@ -41,7 +41,7 @@ profiles and reply as the bot.
 - Office assistants check the Codex executable at construction, availability
   checks, and execution. A missing versioned Desktop binary can recover under
   narrow conditions, and generated runtime copies upgrade only from a
-  reproducible, matching v1/v2/v3/v4/v5 copy to v6. See
+  reproducible, matching v1/v2/v3/v4/v5/v6 copy to v7. See
   [Office update recovery](docs/setup.md#office-recovery-after-updates-and-reboots).
 - Office CLI identity defaults to `bot-only`. A verified assistant can opt into
   `user-default` only with explicit approval matching its verified owner; Office
@@ -65,6 +65,11 @@ profiles and reply as the bot.
   and marked output attachment delivery are included; see
   [native Office execution](docs/setup.md#optional-native-codex-desktop-execution)
   for private configuration and validation limits.
+- Office CLI runs can explicitly enable `liveInputEnabled` to steer new verified
+  owner direct-message input into the same active turn through a dedicated stdio
+  app-server, retaining the assistant home, thread and Feishu identity. Disabled
+  by default; uncertain submissions are not replayed automatically. See
+  [live Office input](docs/setup.md#optional-live-input-for-office-cli-runs).
 
 Messages are sent to Feishu/Lark and the Codex service selected in your setup.
 When Desktop or visibility features are enabled, selected content can also be

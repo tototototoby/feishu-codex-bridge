@@ -25,6 +25,7 @@ const PATCHSET_CURRENT = "office-runtime-v3";
 const PATCHSET_NATIVE = "office-runtime-v4";
 const PATCHSET_APPROVED_IDENTITY = "office-runtime-v5";
 const PATCHSET_USER_AUTH = "office-runtime-v6";
+const PATCHSET_LIVE = "office-runtime-v7";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -624,6 +625,69 @@ function upgradeExpectedOfficeCliV5ToV6(v5Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV6ToV7(v6Expected) {
+  const officeUserAuthUrl = JSON.stringify(new URL("./office-user-auth.mjs", import.meta.url).href);
+  const officeLiveRunUrl = JSON.stringify(new URL("./office-live-run.mjs", import.meta.url).href);
+  const officeLiveIntakeUrl = JSON.stringify(new URL("./office-live-intake.mjs", import.meta.url).href);
+  const v6Marker = `// OFFICE_PATCHSET:${PATCHSET_USER_AUTH}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v7Marker = `// OFFICE_PATCHSET:${PATCHSET_LIVE}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v6Expected, v6Marker, v7Marker, "patchset-marker-v7");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET_USER_AUTH}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_LIVE}:policy-import`, "policy-import-marker-v7");
+  patched = replaceExactlyOnce(patched,
+    `import { createOfficeUserAuthRun } from ${officeUserAuthUrl}; // OFFICE_PATCH:user-auth-import`,
+    `import { createOfficeUserAuthRun } from ${officeUserAuthUrl}; // OFFICE_PATCH:user-auth-import\nimport { createOfficeLiveRun } from ${officeLiveRunUrl}; // OFFICE_PATCH:live-run-import\nimport { tryOfficeLiveInput } from ${officeLiveIntakeUrl}; // OFFICE_PATCH:live-intake-import`,
+    "live-imports");
+  patched = replaceExactlyOnce(patched,
+    '    if (isOfficeRuntime() && opts.officeStartupAttempt !== true) {',
+    `    if (isOfficeRuntime() && loadOfficeAssistantFromProcess({ requireReady: true }).liveInputEnabled) {
+      const assistant = loadOfficeAssistantFromProcess({ requireReady: true });
+      const env = mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel));
+      env.CODEX_HOME = assistant.codexHome;
+      env.LARK_CHANNEL_HOME = assistant.bridgeHome;
+      return createOfficeLiveRun({ ...opts, model: "gpt-6.1-sol", liveInputEnabled: true }, {
+        binary: resolveOfficeCodexBinary(this.binary), env,
+        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        logger: (event, fields) => log.info("office-live-run", event, fields),
+      });
+    } // OFFICE_PATCH:live-run-boundary
+    if (isOfficeRuntime() && opts.officeStartupAttempt !== true) {`,
+    "live-run-boundary");
+  patched = replaceExactlyOnce(patched,
+    '  const size = pending.push(scope, emsg);',
+    `  if (isOfficeRuntime() && loadOfficeAssistantFromProcess({ requireReady: true }).liveInputEnabled) {
+    const activeRun = activeRuns.get(scope)?.run;
+    if (typeof activeRun?.steer === "function") {
+      let liveSubmissionAttempted = false;
+      try {
+        const resourceItems = emsg.resources.map((resource) => ({ messageId: emsg.messageId, resource }));
+        const attachments = await deps.media.resolve(resourceItems, controls.profileConfig.attachments);
+        const quoteTarget = replyQuoteTargetForMessage(emsg, chatMode);
+        const quote = quoteTarget && quoteTarget !== emsg.messageId ? await fetchQuotedContext(channel, quoteTarget) : null;
+        const prompt = buildPrompt([emsg], attachments, quote ? [quote] : [], [], channel.botIdentity, [
+          "This is new user input for the active turn. Apply corrections now, preserve existing goals unless explicitly cancelled, and answer every outstanding user request accurately. Do not repeat completed external writes or sends.",
+        ]);
+        const images = attachments.filter((item) => item.decision === "accepted" && item.kind === "image").map((item) => item.absPath);
+        liveSubmissionAttempted = true;
+        if (await tryOfficeLiveInput({ run: activeRun, msg: emsg, scope, prompt, images,
+          logger: (event, fields) => log.info("office-live-input", event, fields) })) return;
+      } catch {
+        log.warn("office-live-input", liveSubmissionAttempted ? "submission-blocked" : "preparation-deferred", { messageId: emsg.messageId });
+        if (liveSubmissionAttempted) return;
+      }
+    }
+  } // OFFICE_PATCH:live-input-direct-intake
+  const size = pending.push(scope, emsg);`,
+    "live-input-direct-intake");
+  for (const marker of [v7Marker, "OFFICE_PATCH:live-run-import", "OFFICE_PATCH:live-intake-import",
+    "OFFICE_PATCH:live-run-boundary", "OFFICE_PATCH:live-input-direct-intake",
+    "OFFICE_PATCH:user-auth-boundary", "OFFICE_PATCH:startup-retry-boundary"]) {
+    if (!patched.includes(marker)) throw new Error("generated office CLI patch marker is missing");
+  }
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -642,7 +706,8 @@ async function ensureOfficeCli(assistant) {
   const v3Expected = upgradeExpectedOfficeCliV2ToV3(v2Expected);
   const v4Expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
   const v5Expected = upgradeExpectedOfficeCliV4ToV5(v4Expected);
-  const expected = upgradeExpectedOfficeCliV5ToV6(v5Expected);
+  const v6Expected = upgradeExpectedOfficeCliV5ToV6(v5Expected);
+  const expected = upgradeExpectedOfficeCliV6ToV7(v6Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -650,7 +715,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected) || currentHash === sha256(v5Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected) || currentHash === sha256(v5Expected) || currentHash === sha256(v6Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }

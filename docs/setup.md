@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1, v2, v3, v4 or v5 to v6 only when its bytes match the corresponding content
+upgrade from v1, v2, v3, v4, v5 or v6 to v7 only when its bytes match the corresponding content
 rebuilt from the pinned upstream package at the current installation location.
-A v6 copy is reused only when it matches the expected content. Unknown/manual changes
+A v7 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -73,6 +73,51 @@ visibility mirror, an accepted request or a progress card does not prove that
 the business request completed. Visibility records are deferred while the
 configured local Codex target has an active turn; an unloaded target additionally
 requires explicit local identity, Codex kind and turn evidence.
+
+## Optional live input for Office CLI runs
+
+Live input is disabled by default. After reviewing the intended assistant, set
+`"liveInputEnabled": true` in its private `assistant.json`, then use the normal
+per-assistant stop/start lifecycle after updating source. The field accepts only
+a boolean; its existing identity, path, app, owner and profile checks still apply.
+Keep private profiles, state, claims and credentials outside source control.
+
+The live route starts a dedicated Codex stdio app-server for the CLI run, retaining
+that assistant's configured Codex home, Lark identity and existing thread binding.
+New input targets the current thread and active turn through `turn/steer`.
+The host does not create a visibility mirror or a second writer to inject input.
+The existing authorization preflight remains outside the live run; when live
+input is disabled, the existing CLI and constrained startup retry route remains.
+The separate native Desktop integration below retains its own transport.
+
+Before spawning, the adapter acquires a durable exclusive writer lease in the
+canonical real `CODEX_HOME`. An existing lease blocks another writer, including
+across bridge restarts. The normal final/done result is emitted only after the
+child closes and ownership is verified while releasing the lease. Unconfirmed
+shutdown or release failure leaves the home blocked. Recovery requires a
+maintainer to establish that the original writer has exited and review the saved
+ownership evidence; neither PID/age guesses, changing timestamps nor deleting a
+claim to retry is a supported recovery procedure.
+
+Only the verified owner's direct messages in the current scope can steer the
+run. Group/topic messages, bot senders and unrelated scopes are ineligible.
+Existing intake claim, access and command gates run first. Accepted attachments
+and quoted context use the existing intake policy. An OAuth confirmation for a
+pending private device flow stays on the original pending/preflight path, so
+steering cannot bypass its source, time and nonce checks.
+
+Before submitting, the host writes a permanent exclusive source claim and a
+bounded state record under the assistant's private bridge home. A confirmed
+`not-active` response may defer to the pending queue once; timeouts, exceptions,
+ambiguous acceptance and persistence failures are consumed without automatic
+replay. Unresolved state and stale locks require reviewed recovery, never age-based
+deletion or clearing claims to force another submission. A steer acknowledgement
+means acceptance only, not completion of the new request or Feishu delivery.
+
+This protocol is version-sensitive. Static source review is not an end-to-end
+acceptance run; support for the installed app-server, steering, stop handling,
+model output and actual replies must be verified using a real authorized request.
+No fresh live CLI roundtrip is claimed by this source publication.
 
 ## Optional native Codex Desktop execution
 

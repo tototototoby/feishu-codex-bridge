@@ -207,6 +207,7 @@ export function createOfficeUserAuthRun(opts, runOnce) {
   let lease;
   let interrupted = false;
   let failure;
+  let launchAttempted = false;
   let cancel;
   const cancelled = new Promise((resolvePromise) => { cancel = resolvePromise; });
   const ready = (async () => {
@@ -225,13 +226,19 @@ export function createOfficeUserAuthRun(opts, runOnce) {
         if (expiresAt <= Date.now()) throw fail("invalid-token");
       }
       if (interrupted) throw fail("stopped");
+      launchAttempted = true;
       active = runOnce(opts);
     } catch (error) {
-      failure = error instanceof AuthFailure ? error.message : "office-user-auth-config";
+      failure = error instanceof AuthFailure ? error.message : launchAttempted ? "office-run-start-unavailable" : "office-user-auth-config";
     }
   })();
   return {
     runId: opts.runId,
+    async steer(input) {
+      await ready;
+      if (interrupted || !active || typeof active.steer !== "function") return { status: "not-active" };
+      return active.steer(input);
+    },
     async stop() {
       interrupted = true;
       cancel();
@@ -254,7 +261,9 @@ export function createOfficeUserAuthRun(opts, runOnce) {
         await ready;
         if (active) { yield* active.events; return; }
         if (interrupted) { yield { type: "done", terminationReason: "interrupted" }; return; }
-        yield { type: "error", message: `本人授权预检未完成（${failure ?? "office-user-auth-config"}）；模型未启动。`, terminationReason: "failed" };
+        yield { type: "error", message: failure === "office-run-start-unavailable"
+          ? "会话执行入口未能启动（office-run-start-unavailable）；没有新建业务运行。请检查保留的运行占用记录与进程状态。"
+          : `本人授权预检未完成（${failure ?? "office-user-auth-config"}）；模型未启动。`, terminationReason: "failed" };
       },
     },
   };
