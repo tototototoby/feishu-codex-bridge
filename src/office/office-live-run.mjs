@@ -1,13 +1,15 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { StringDecoder } from "node:string_decoder";
+import { TextDecoder } from "node:util";
 import { isAbsolute, join, resolve } from "node:path";
 import { closeSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 
 const MODEL = "gpt-6.1-sol";
 const RPC_MS = 20_000;
 const STARTUP_MS = 65_000;
-const MAX_LINE_BYTES = 2 * 1024 * 1024;
+const MAX_WRITE_BYTES = 2 * 1024 * 1024;
+const MAX_FRAME_BYTES = 64 * 1024 * 1024;
+const FRAME_SLAB_BYTES = 64 * 1024;
 const MAX_QUEUE_BYTES = 8 * 1024 * 1024;
 const MAX_ITEMS = 1024;
 const MAX_TEXT_BYTES = 8 * 1024 * 1024;
@@ -18,6 +20,12 @@ const TOOL_OUTPUT_CHARS = 128 * 1024;
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 const textValue = (value) => typeof value === "string" ? value : "";
 const tokenValue = (value) => Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+const DIAGNOSTIC_METHODS = new Set([
+  "item/completed", "turn/completed", "item/started", "turn/started", "error",
+  "item/agentMessage/delta", "item/reasoning/summaryTextDelta",
+  "item/commandExecution/outputDelta", "item/fileChange/outputDelta",
+  "thread/tokenUsage/updated", "rpc-response", "other",
+]);
 
 /**
  * One stdio app-server process, one thread, one turn. The caller owns identity,
@@ -93,9 +101,14 @@ export function createOfficeLiveRun(opts, { binary, env, prompt = opts.prompt, l
   let usage;
   let steerTail = Promise.resolve();
   let steerQueued = 0;
-  let stdoutBuffer = "";
+  let frameSlabs = [];
+  let frameSlab;
+  let frameSlabUsed = 0;
+  let frameBytes = 0;
+  let lastFrameBytes = 0;
+  let lastFrameMethod = "other";
   let protocolBroken = false;
-  const decoder = new StringDecoder("utf8");
+  const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
   let resolveExit;
   const exitPromise = new Promise((resolve) => { resolveExit = resolve; });
 
@@ -139,10 +152,12 @@ export function createOfficeLiveRun(opts, { binary, env, prompt = opts.prompt, l
     // Normal completion is visible only after close and successful lease release.
     // A failed shutdown may close the stream, but keeps the durable claim and
     // emits a failure so a later writer cannot mistake it for successful exit.
-    if (errorMessage) enqueue({ type: "error", message: errorMessage, terminationReason: "failed" }, true);
     if (lastFinalText !== undefined) enqueue({ type: "final_text", content: lastFinalText }, true);
     if (usage) enqueue({ type: "usage", ...usage }, true);
-    enqueue({ type: "done", threadId, terminationReason: reason }, true);
+    const failureMessage = errorMessage ?? (reason === "failed" ? "office live run failed" : undefined);
+    transportDiagnostic(failureMessage ? "terminal-error" : "terminal-done", lastFrameBytes, lastFrameMethod);
+    if (failureMessage) enqueue({ type: "error", message: failureMessage, terminationReason: "failed" }, true);
+    else enqueue({ type: "done", threadId, terminationReason: reason }, true);
     closeStream();
   }
 
@@ -156,7 +171,7 @@ export function createOfficeLiveRun(opts, { binary, env, prompt = opts.prompt, l
   function write(message) {
     if (exited || closing || child.stdin.destroyed || child.stdin.writableEnded) return false;
     const encoded = JSON.stringify(message) + "\n";
-    if (Buffer.byteLength(encoded, "utf8") > MAX_LINE_BYTES) return false;
+    if (Buffer.byteLength(encoded, "utf8") > MAX_WRITE_BYTES) return false;
     // Backpressure is bounded: at most a handful of RPCs and a serial steer can
     // be pending. A successful write is evidence of submission, not acceptance.
     try { child.stdin.write(encoded); return true; } catch { return false; }
@@ -364,37 +379,106 @@ export function createOfficeLiveRun(opts, { binary, env, prompt = opts.prompt, l
     }
   }
 
+  function transportDiagnostic(reason, bytes, method = "other") {
+    log("transport", { reason, frameBytes: bytes,
+      method: DIAGNOSTIC_METHODS.has(method) ? method : "other", hasFinal: lastFinalText !== undefined });
+  }
+
+  function resetFrame() {
+    frameSlabs = [];
+    frameSlab = undefined;
+    frameSlabUsed = 0;
+    frameBytes = 0;
+  }
+
+  function breakProtocol(reason, message, bytes, method = "other") {
+    protocolBroken = true;
+    resetFrame();
+    lastFrameBytes = bytes;
+    lastFrameMethod = DIAGNOSTIC_METHODS.has(method) ? method : "other";
+    transportDiagnostic(reason, bytes, lastFrameMethod);
+    fail(message);
+  }
+
+  function appendFrame(chunk, start, end) {
+    const incomingBytes = end - start;
+    if (frameBytes + incomingBytes > MAX_FRAME_BYTES) {
+      breakProtocol("frame-limit", "office live run protocol frame limit exceeded", frameBytes + incomingBytes);
+      return false;
+    }
+    // Own fixed-size slabs keep both bytes and fragment count bounded. Each
+    // input byte is copied once here; no partial UTF-8 string is ever rebuilt.
+    while (start < end) {
+      if (!frameSlab) frameSlab = Buffer.allocUnsafe(FRAME_SLAB_BYTES);
+      const copied = Math.min(end - start, FRAME_SLAB_BYTES - frameSlabUsed);
+      chunk.copy(frameSlab, frameSlabUsed, start, start + copied);
+      start += copied;
+      frameSlabUsed += copied;
+      frameBytes += copied;
+      if (frameSlabUsed === FRAME_SLAB_BYTES) {
+        frameSlabs.push(frameSlab);
+        frameSlab = undefined;
+        frameSlabUsed = 0;
+      }
+    }
+    return true;
+  }
+
+  function processFrame(final = false) {
+    if (!frameBytes) return true;
+    const bytes = frameBytes;
+    if (frameSlabUsed) frameSlabs.push(frameSlab.subarray(0, frameSlabUsed));
+    let line;
+    try {
+      const encoded = frameSlabs.length === 1 ? frameSlabs[0] : Buffer.concat(frameSlabs, bytes);
+      // Decode one complete frame, so multi-byte characters split across any
+      // stdout chunks/slabs remain intact. Invalid UTF-8 fails the protocol.
+      line = decoder.decode(encoded);
+    } catch {
+      breakProtocol("invalid-utf8", "office live run returned invalid UTF-8", bytes);
+      return false;
+    }
+    resetFrame();
+    if (!line.trim()) return true;
+    let message;
+    try { message = JSON.parse(line); } catch {
+      breakProtocol(final ? "incomplete-json" : "invalid-json",
+        final ? "office live run ended with incomplete JSON" : "office live run returned invalid JSON", bytes);
+      return false;
+    }
+    lastFrameBytes = bytes;
+    lastFrameMethod = typeof message?.method === "string" && DIAGNOSTIC_METHODS.has(message.method) ? message.method :
+      isObject(message) && Object.hasOwn(message, "id") && !message.method ? "rpc-response" : "other";
+    if (bytes > MAX_WRITE_BYTES) transportDiagnostic("large-frame", bytes, lastFrameMethod);
+    // All frames within the hard limit are parsed and dispatched, including
+    // large completed items/turns and unknown methods. No size-based skipping.
+    try { onMessage(message); } catch {
+      breakProtocol("dispatch-failed", "office live run protocol dispatch failed", bytes, lastFrameMethod);
+      return false;
+    }
+    return true;
+  }
+
   function parseStdout(chunk, final = false) {
     if (protocolBroken) return;
-    stdoutBuffer += final ? decoder.end() : decoder.write(chunk);
-    let newline;
-    while ((newline = stdoutBuffer.indexOf("\n")) !== -1) {
-      const line = stdoutBuffer.slice(0, newline).replace(/\r$/, "");
-      stdoutBuffer = stdoutBuffer.slice(newline + 1);
-      if (Buffer.byteLength(line, "utf8") > MAX_LINE_BYTES) {
-        protocolBroken = true; stdoutBuffer = "";
-        fail("office live run protocol line limit exceeded"); return;
-      }
-      if (!line.trim()) continue;
-      try { onMessage(JSON.parse(line)); } catch {
-        protocolBroken = true; stdoutBuffer = "";
-        fail("office live run returned invalid JSON"); return;
+    if (chunk !== undefined) {
+      let start = 0;
+      while (start < chunk.length) {
+        const newline = chunk.indexOf(0x0a, start);
+        const end = newline === -1 ? chunk.length : newline;
+        if (!appendFrame(chunk, start, end)) return;
+        if (newline === -1) break;
+        if (!processFrame()) return;
+        start = newline + 1;
       }
     }
-    if (Buffer.byteLength(stdoutBuffer, "utf8") > MAX_LINE_BYTES) {
-      protocolBroken = true; stdoutBuffer = "";
-      fail("office live run protocol buffer limit exceeded"); return;
-    }
-    if (final && stdoutBuffer.trim()) {
-      try { onMessage(JSON.parse(stdoutBuffer)); } catch { fail("office live run ended with incomplete JSON"); }
-      stdoutBuffer = "";
-    }
+    if (final) processFrame(true);
   }
 
   child.stdout.on("data", (chunk) => parseStdout(chunk));
   child.stdout.on("end", () => parseStdout(undefined, true));
   child.stdout.on("error", () => fail("office live run stdout failed"));
-  child.stderr.on("data", (chunk) => { stderrBytes = Math.min(MAX_LINE_BYTES, stderrBytes + chunk.length); });
+  child.stderr.on("data", (chunk) => { stderrBytes = Math.min(MAX_WRITE_BYTES, stderrBytes + chunk.length); });
   child.stderr.on("error", () => { /* No stderr content is retained or forwarded. */ });
   child.stdin.on("error", () => fail("office live run stdin failed"));
   child.on("error", () => fail("office live run process failed to start"));

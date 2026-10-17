@@ -307,11 +307,15 @@ function renderProgress(run) {
 
 function finalContent(state) {
   const terminal = state?.terminal;
+  const finalText = typeof state?.finalText === "string" ? state.finalText.trim() : "";
+  const abnormal = terminal === "error" ? "本次执行未正常结束。以下是异常前已生成的结果，完成状态仍需核对："
+    : terminal === "interrupted" ? "本次处理已中断。以下是中断前已生成的结果："
+    : terminal === "idle_timeout" ? "本次处理等待超时，已停止。以下是超时前已生成的结果：" : null;
+  if (abnormal && finalText) return sanitizePublicText(abnormal + "\n\n" + finalText, MAX_PROGRESS_CHARS);
   if (terminal === "error") return "本次执行未正常结束，请先核对是否已有结果，再安排后续处理。";
   if (terminal === "interrupted") return "本次处理已中断，未能返回完整结果。";
   if (terminal === "idle_timeout") return "本次处理等待超时，已停止。";
 
-  const finalText = typeof state?.finalText === "string" ? state.finalText.trim() : "";
   if (finalText) return sanitizePublicText(finalText, MAX_PROGRESS_CHARS);
   const blocks = Array.isArray(state?.blocks) ? state.blocks : [];
   const text = blocks

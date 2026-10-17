@@ -114,6 +114,25 @@ replay. Unresolved state and stale locks require reviewed recovery, never age-ba
 deletion or clearing claims to force another submission. A steer acknowledgement
 means acceptance only, not completion of the new request or Feishu delivery.
 
+The inbound app-server transport has a hard 64 MiB limit per newline-delimited
+frame. It accumulates bytes in bounded 64 KiB slabs and decodes complete UTF-8
+frames, including characters split across stdout chunks. Invalid UTF-8, invalid
+JSON and frames above the hard limit fail the run. The outbound request limit
+remains 2 MiB; the event queue and accumulated assistant text each retain their
+8 MiB limits, and tool output shown in events stays clipped to 128 × 1024
+character units. A larger transport frame does not expand these presentation or
+input limits. Diagnostics record fixed reason/method categories, frame byte
+counts and whether a real final was observed, without frame bodies or tool output.
+
+At shutdown, any genuinely observed final text and usage precede the single
+terminal event. A protocol failure remains an error rather than a successful done.
+If a real assistant final exists before an error, interruption or idle timeout,
+the final presentation retains that result with an explicit abnormal-status label.
+Without a real final, the existing failure message remains; tool output and
+progress text are not promoted to a completed answer. This transport change has
+static source review only; no large-frame replay or end-to-end validation is
+claimed by its publication.
+
 This protocol is version-sensitive. Static source review is not an end-to-end
 acceptance run; support for the installed app-server, steering, stop handling,
 model output and actual replies must be verified using a real authorized request.
