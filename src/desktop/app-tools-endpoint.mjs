@@ -6,6 +6,7 @@ import { assertAppToolsPipePath, configuredNodePath, requireAppToolsServer } fro
 const PIPE_ROOT = "\\\\.\\pipe\\";
 const PIPE_PATH_ENV = "CODEX_APP_TOOLS_PIPE_PATH";
 const UUID_SUFFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const OFFICIAL_PIPE_PREFIXES = Object.freeze(["codex-browser-use-", "codex-app-tools-"]);
 const METADATA_TIMEOUT_MS = 10_000;
 const METADATA_MAX_OUTPUT_BYTES = 8 * 1024;
 const LIST_CALL_TIMEOUT_MS = 3_000;
@@ -144,7 +145,7 @@ export async function discoverAppToolsEndpoint({ control, anchorThreadId } = {})
 
   const state = { promise: null };
   const discover = namespace
-    ? findEndpoint({
+    ? findEndpointWithOfficialFallback({
       namespace,
       preferredName: suppliedName,
       fallbackPreferredName,
@@ -167,6 +168,32 @@ export async function discoverAppToolsEndpoint({ control, anchorThreadId } = {})
   });
   discoveries.set(key, state);
   return state.promise;
+}
+
+async function findEndpointWithOfficialFallback({ namespace, ...options }) {
+  if (!OFFICIAL_PIPE_PREFIXES.includes(namespace.prefix)) {
+    return findEndpoint({ ...options, namespace });
+  }
+
+  const deadline = Date.now() + DISCOVERY_TOTAL_TIMEOUT_MS;
+  const prefixes = [
+    namespace.prefix,
+    ...OFFICIAL_PIPE_PREFIXES.filter((prefix) => prefix !== namespace.prefix),
+  ];
+  for (const prefix of prefixes) {
+    if (Date.now() >= deadline - MCP_CLOSE_RESERVE_MS) return null;
+    let endpoint = null;
+    try {
+      endpoint = await findEndpoint({
+        ...options,
+        namespace: { prefix },
+        preferredName: prefix === namespace.prefix ? options.preferredName : "",
+        deadline,
+      });
+    } catch {}
+    if (endpoint) return endpoint;
+  }
+  return null;
 }
 
 async function discoverAcrossNamespaces({ anchorThreadId, serverPath, nodePath }) {
