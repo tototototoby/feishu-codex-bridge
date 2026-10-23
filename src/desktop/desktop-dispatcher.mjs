@@ -866,7 +866,7 @@ export class DesktopDispatcher {
       return;
     }
     try {
-      const presentationResult = await request.presentation?.finish(content);
+      const presentationResult = await request.presentation?.finish(content, "completed", false);
       let receipt;
       if (presentationResult?.kind === "streamed") {
         receipt = presentationResult.receipt;

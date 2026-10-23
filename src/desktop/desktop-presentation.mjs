@@ -231,7 +231,7 @@ export class DesktopPresentation {
       try {
         const response = await this.channel.rawClient.im.v1.message.patch({
           path: { message_id: this.messageId },
-          data: { content: JSON.stringify(buildProgressCard(content, completed, paused)) },
+          data: { content: JSON.stringify(buildProgressCard(content, completed, paused, this.finishIntent?.successTheme !== false)) },
         });
         if (!hasApiSuccessCode(response)) {
           if (isTransientRestError(response)) {
@@ -263,13 +263,14 @@ export class DesktopPresentation {
     return !this.writeFailed;
   }
 
-  finish(content, state = "completed") {
+  finish(content, state = "completed", successTheme = true) {
     if (this.finishTask) return this.finishTask;
     if (!this.finishIntent) {
       const finalState = state === "paused" ? "paused" : "completed";
       this.finishIntent = {
         content: normalizeProgressContent(content),
         state: finalState,
+        successTheme: successTheme !== false,
       };
       this.completed = finalState === "completed";
       this.paused = finalState === "paused";
@@ -372,7 +373,8 @@ export class DesktopPresentation {
   }
 }
 
-function buildProgressCard(content, completed = false, paused = false) {
+function buildProgressCard(content, completed = false, paused = false, successTheme = completed) {
+  const theme = completed && !paused && successTheme ? "green" : "blue";
   const visibleContent = normalizeProgressContent(content);
   const title = paused ? "任务已暂停" : completed ? "任务回复" : "桌面任务进度";
   return {
@@ -384,7 +386,7 @@ function buildProgressCard(content, completed = false, paused = false) {
         tag: "plain_text",
         content: paused ? "恢复后继续同步" : completed ? "桌面任务已完成" : "结果会更新在此卡片中",
       },
-      template: "blue",
+      template: theme,
       icon: { tag: "standard_icon", token: "ai-common_colorful" },
     },
     body: {
@@ -400,7 +402,7 @@ function buildProgressCard(content, completed = false, paused = false) {
               tag: "column",
               width: "weighted",
               weight: 1,
-              background_style: "blue-50",
+              background_style: `${theme}-50`,
               padding: "12px",
               vertical_spacing: "4px",
               elements: [
