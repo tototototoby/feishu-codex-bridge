@@ -1,3 +1,4 @@
+import { taskScopeReplyOptions } from "./task-reply-policy.mjs";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute } from "node:path";
@@ -5,7 +6,7 @@ import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { DesktopPresentation } from "./desktop-presentation.mjs";
 import { sendCompletionNoticeOnce } from "./completion-notifier.mjs";
 import { discoverAppToolsEndpoint } from "./app-tools-endpoint.mjs";
-import { groupScopeReplyOptions, isVerifiedGroupControl } from "./group-policy.mjs";
+import { isVerifiedGroupControl } from "./group-policy.mjs";
 import {
   configuredDesktopChatId,
   configuredDesktopThreadId,
@@ -162,6 +163,12 @@ export class DesktopDispatcher {
 
   async ensurePresentation(request, channel, { resumed = false } = {}) {
     if (request.presentation || this.closed || !channel) return request.presentation;
+    if (resumed && request.threadReplyPolicyVersion === 1 && request.presentationState && !request.presentationMessageId) {
+      // A create intent without a receipt is uncertain after a process exit.
+      // Recovery may monitor it, but cannot safely create a second card.
+      this.reportError("presentation-resume", "thread-card-receipt-missing", request.requestId);
+      return null;
+    }
     request.presentationState = "starting";
     await this.persist();
     if (this.closed) {
@@ -174,6 +181,20 @@ export class DesktopDispatcher {
       chatId: this.scope,
       sourceMessageId: request.messageId,
       replyInThread: request.replyInThread,
+      onThreadRejected: !this.groupControl && request.threadReplyPolicyVersion === 1 ? async (code) => {
+        if (!request.replyInThread || request.presentationMessageId || request.presentation?.messageId ||
+            request.threadFallbackCode || ![230071, 230072].includes(code)) return false;
+        // Persist the inline decision before a second create is permitted.
+        request.replyInThread = false;
+        request.threadFallbackCode = code;
+        try { await this.persist(); }
+        catch (error) {
+          request.replyInThread = true;
+          request.threadFallbackCode = null;
+          throw error;
+        }
+        return true;
+      } : null,
       previousReactionId: request.typingReactionId,
       previousMessageId: resumed ? request.presentationMessageId : undefined,
       resumed,
@@ -258,6 +279,7 @@ export class DesktopDispatcher {
         serverPath,
         nodePath: configuredNodePath(),
         notifyCompletion: !groupScope && (this.scope === configuredDesktopChatId() || Boolean(this.officeBinding)) && raw?.notifyCompletion === true,
+        taskReplyMode: raw?.taskReplyMode === "long_tasks_in_thread" ? "long_tasks_in_thread" : "inline",
       };
       if (this.control.threadId !== expectedThreadId || !this.control.nodePath) {
         this.controlError = "invalid-control";
@@ -358,14 +380,14 @@ export class DesktopDispatcher {
       return true;
     }
 
+    const replyInThread = taskScopeReplyOptions(msg, this.groupControl ?? this.control).replyInThread === true;
     const request = {
       requestId: randomUUID(),
       messageId,
       ...(this.officeBinding ? { chatId: this.scope, senderId: msg.senderId, appId: this.officeBinding.appId } : {}),
-      replyInThread: this.groupControl
-        ? groupScopeReplyOptions(msg, this.groupControl).replyInThread === true
-        : Boolean(msg.threadId),
-      completionNoticeEligible: this.control?.notifyCompletion === true,
+      replyInThread,
+      ...(!this.groupControl && replyInThread ? { threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
+      completionNoticeEligible: this.control?.notifyCompletion === true && !replyInThread,
       completionNoticeState: null,
       status: "preparing",
       createdAt: Date.now(),
@@ -749,6 +771,17 @@ export class DesktopDispatcher {
       return;
     }
     const body = formatFeishuReply(request, answer);
+    if (request.threadReplyPolicyVersion === 1) {
+      // Media must observe the persisted route after any inline downgrade.
+      await request.presentation?.startPromise;
+      if (!request.presentation?.messageId) {
+        request.status = "reply_uncertain";
+        request.presentationState = "uncertain";
+        request.errorCode = "thread-card-receipt-missing";
+        await this.persist();
+        return;
+      }
+    }
     if (!request.finalMediaHandled) {
       request.finalMediaStarted = true;
       await this.persist();
@@ -904,6 +937,9 @@ export class DesktopDispatcher {
   async sendLark(request, content, channelOverride) {
     const channel = channelOverride ?? request.channel ?? this.channel;
     if (!channel) throw new RelayError("channel-unavailable");
+    if (request.threadReplyPolicyVersion === 1 && !request.presentationMessageId) {
+      throw new RelayError("thread-card-receipt-missing");
+    }
     const options = {
       replyTo: request.messageId,
       ...(request.replyInThread ? { replyInThread: true } : {}),
@@ -1017,6 +1053,10 @@ function normalizeRequest(input) {
     senderId: nonEmptyString(input.senderId),
     appId: nonEmptyString(input.appId),
     replyInThread: input.replyInThread === true,
+    ...(input.threadReplyPolicyVersion === 1 ? {
+      threadReplyPolicyVersion: 1,
+      threadFallbackCode: [230071, 230072].includes(input.threadFallbackCode) ? input.threadFallbackCode : null,
+    } : {}),
     completionNoticeEligible: input.completionNoticeEligible === true,
     completionNoticeState: normalizeCompletionNoticeState(input.completionNoticeState),
     completionNoticeUuid: nonEmptyString(input.completionNoticeUuid),
@@ -1057,6 +1097,9 @@ function serializableRequest(request) {
     messageId: request.messageId,
     ...(request.chatId ? { chatId: request.chatId, senderId: request.senderId, appId: request.appId } : {}),
     replyInThread: request.replyInThread,
+    ...(request.threadReplyPolicyVersion === 1 ? {
+      threadReplyPolicyVersion: 1, threadFallbackCode: request.threadFallbackCode ?? null,
+    } : {}),
     completionNoticeEligible: request.completionNoticeEligible,
     completionNoticeState: request.completionNoticeState,
     completionNoticeUuid: request.completionNoticeUuid,

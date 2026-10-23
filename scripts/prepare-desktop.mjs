@@ -29,7 +29,38 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return applyMemberImagesPatch(patched);
+  return applyTaskReplyPatch(applyMemberImagesPatch(patched));
+}
+
+// Keep the pinned unified diff intact; every topic-routing anchor must be unique.
+function applyTaskReplyPatch(source) {
+  const replacements = [
+    ["import { DesktopDispatcher } from \"__DESKTOP_MODULES__/desktop-dispatcher.mjs\";",
+      "import { DesktopDispatcher } from \"__DESKTOP_MODULES__/desktop-dispatcher.mjs\";\nimport { canonicalPrivateExecutionMessage } from \"__DESKTOP_MODULES__/task-reply-policy.mjs\";"],
+    ["...ctx.chatMode === \"topic\" && ctx.msg.threadId ? { replyInThread: true } : {}",
+      "...((ctx.msg.feishuReplyThreadId || ctx.msg.feishuReplyTopicId || ctx.msg.feishuReplyChatMode === \"topic\" || ctx.chatMode === \"topic\" && ctx.msg.threadId) ? { replyInThread: true } : {})"],
+    ["  const emsg = threadId === msg.threadId ? msg : { ...msg, threadId };",
+      "  let emsg = threadId === msg.threadId ? msg : { ...msg, threadId };"],
+    ["  const chatMode = threadId ? \"topic\" : resolvedMode;",
+      "  let chatMode = threadId ? \"topic\" : resolvedMode;"],
+    ["  const scope = chatMode === \"topic\" && threadId ? `${msg.chatId}:${threadId}` : msg.chatId;",
+      "  let scope = chatMode === \"topic\" && threadId ? `${msg.chatId}:${threadId}` : msg.chatId;"],
+    ["  if (isForwardFetchFailed(emsg)) {",
+      "  let linkedNativeRoot = false;\n  if (msg.chatType === \"p2p\" && msg.chatId === configuredDesktopChatId() && desktopDispatcher) {\n    // Verify the configured private binding before removing execution topic IDs.\n    const appId = controls.cfg.accounts?.app?.id;\n    if (senderTypeOf(msg) !== \"user\" || msg.senderId !== controls.botOwnerId ||\n        !/^ou_[A-Za-z0-9_-]{8,128}$/.test(controls.botOwnerId ?? \"\") ||\n        !/^cli_[A-Za-z0-9_-]{8,128}$/.test(appId ?? \"\") ||\n        controls.profileConfig.accounts?.app?.id !== appId || channel.opts?.appId !== appId) {\n      log.warn(\"desktop-relay\", \"private-binding-mismatch\", { chatId: msg.chatId });\n      return;\n    }\n    const executionMessage = canonicalPrivateExecutionMessage(emsg);\n    const rootIdentity = await commandSessionCatalogIdentity({\n      msg: executionMessage, scope: msg.chatId, mode: \"p2p\", workspaces, controls, access: accessDecision\n    });\n    const rootEntry = rootIdentity ? sessionCatalog?.activeFor(rootIdentity) : void 0;\n    if (!await desktopDispatcher.matches(msg.chatId, rootIdentity, rootEntry)) {\n      log.warn(\"desktop-relay\", \"private-root-catalog-mismatch\", { chatId: msg.chatId });\n      return;\n    }\n    emsg = executionMessage;\n    threadId = void 0;\n    chatMode = \"p2p\";\n    scope = msg.chatId;\n    linkedNativeRoot = true;\n  }\n  if (isForwardFetchFailed(emsg)) {"],
+    ["  const handled = await tryHandleCommand({",
+      "  const handled = !linkedNativeRoot && await tryHandleCommand({"],
+    ["  if (desktopDispatcher && await desktopDispatcher.matches(scope, sessionCatalogIdentity, catalogEntry)) {",
+      "  if (desktopDispatcher && (linkedNativeRoot || await desktopDispatcher.matches(scope, sessionCatalogIdentity, catalogEntry))) {"],
+    ["  const desktopDispatcher = desktopSettings().enabled ? new DesktopDispatcher({\n    onError:",
+      "  const desktopDispatcher = desktopSettings().enabled ? new DesktopDispatcher({\n    promptInstructions: [\n      \"This is the fixed native Codex Desktop connection for the verified owner's Feishu direct message. Keep this configured thread and its actual tools, resources and context for the current request.\",\n      \"If this live message is /stop, the owner authorizes stopping current unfinished work in this same native thread. Stop as soon as you can, preserve completed files and provide a truthful marked acknowledgement. For pending request IDs actually cancelled, include each exact feishu-reply start/end marker with an accurate cancellation acknowledgement. Never claim forced interruption or cancellation you cannot confirm.\",\n      \"If this live message is /status, report the actual work status of this native thread, including verified pending work and blockers. Distinguish completed, running, stopped and uncertain states.\",\n      \"Commands /new, /reset, /resume, /cd and /ws cannot change this fixed connection or its binding. Explain that the owner should describe the work directly; do not create another execution session or change the configured thread, workspace or bot binding.\",\n    ],\n    onError:"],
+    ["    cardAction: async (evt) => {\n      const groupControl =",
+      "    cardAction: async (evt) => {\n      if (evt.chatId === configuredDesktopChatId() && desktopDispatcher &&\n          channel.opts?.appId === cfg.accounts.app.id) return;\n      const groupControl ="],
+  ];
+  for (let index = 0; index < replacements.length; index++) {
+    const [before, after] = replacements[index];
+    source = replaceExactOnce(source, before, after, `Task reply patch anchor mismatch: ${index}`);
+  }
+  return source;
 }
 
 function applyMemberImagesPatch(source) {

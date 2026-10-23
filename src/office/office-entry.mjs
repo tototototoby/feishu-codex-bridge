@@ -26,6 +26,7 @@ const PATCHSET_NATIVE = "office-runtime-v4";
 const PATCHSET_APPROVED_IDENTITY = "office-runtime-v5";
 const PATCHSET_USER_AUTH = "office-runtime-v6";
 const PATCHSET_LIVE = "office-runtime-v7";
+const PATCHSET_NATIVE_ROUTING = "office-runtime-v8";
 const MAX_CAPTURE_BYTES = 8 * 1024;
 const TASK_NAMESPACE = `Fcb-${createHash("sha256").update(`${resolve(PROJECT_ROOT)}|${resolve(DATA_ROOT)}`.toLowerCase()).digest("hex").slice(0, 12)}`;
 
@@ -688,6 +689,25 @@ function upgradeExpectedOfficeCliV6ToV7(v6Expected) {
   return patched;
 }
 
+function upgradeExpectedOfficeCliV7ToV8(v7Expected) {
+  const v7Marker = `// OFFICE_PATCHSET:${PATCHSET_LIVE}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  const v8Marker = `// OFFICE_PATCHSET:${PATCHSET_NATIVE_ROUTING}:stock=${STOCK_VERSION}:${STOCK_SHA256}`;
+  let patched = replaceExactlyOnce(v7Expected, v7Marker, v8Marker, "patchset-marker-v8");
+  patched = replaceExactlyOnce(patched,
+    `// OFFICE_PATCHSET:${PATCHSET_LIVE}:policy-import`,
+    `// OFFICE_PATCHSET:${PATCHSET_NATIVE_ROUTING}:policy-import`, "policy-import-marker-v8");
+  patched = replaceExactlyOnce(patched,
+    "  const handled = nativeCommand === \"handled\" || (nativeCommand !== \"dispatch\" && await tryHandleCommand({",
+    "  const handled = nativeCommand === \"handled\" || (!deps.officeNative?.enabled && nativeCommand !== \"dispatch\" && await tryHandleCommand({", "native-routing-0");
+  patched = replaceExactlyOnce(patched,
+    "    cardAction: async (evt) => {",
+    "    cardAction: async (evt) => {\n      if (officeNative?.enabled) return; // OFFICE_PATCH:native-card-action-guard", "native-routing-1");
+  patched = replaceExactlyOnce(patched,
+    "    comment: async (evt) => {",
+    "    comment: async (evt) => {\n      if (officeNative?.enabled) return; // OFFICE_PATCH:native-comment-guard", "native-routing-2");
+  return patched;
+}
+
 async function writeTextAtomic(path, text) {
   const tempPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
   const handle = await open(tempPath, "wx", 0o600);
@@ -707,7 +727,8 @@ async function ensureOfficeCli(assistant) {
   const v4Expected = upgradeExpectedOfficeCliV3ToV4(v3Expected);
   const v5Expected = upgradeExpectedOfficeCliV4ToV5(v4Expected);
   const v6Expected = upgradeExpectedOfficeCliV5ToV6(v5Expected);
-  const expected = upgradeExpectedOfficeCliV6ToV7(v6Expected);
+  const v7Expected = upgradeExpectedOfficeCliV6ToV7(v6Expected);
+  const expected = upgradeExpectedOfficeCliV7ToV8(v7Expected);
   const officeCli = assistant.cliPath;
   if (await pathEntryExists(officeCli)) {
     if (!(await fileExistsRegular(officeCli))) throw new Error("generated office CLI is not a regular file");
@@ -715,7 +736,7 @@ async function ensureOfficeCli(assistant) {
     const currentHash = sha256(current);
     const expectedHash = sha256(expected);
     if (currentHash === expectedHash) return officeCli;
-    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected) || currentHash === sha256(v5Expected) || currentHash === sha256(v6Expected)) {
+    if (currentHash === sha256(v1Expected) || currentHash === sha256(v2Expected) || currentHash === sha256(v3Expected) || currentHash === sha256(v4Expected) || currentHash === sha256(v5Expected) || currentHash === sha256(v6Expected) || currentHash === sha256(v7Expected)) {
       await writeTextAtomic(officeCli, expected);
       return officeCli;
     }

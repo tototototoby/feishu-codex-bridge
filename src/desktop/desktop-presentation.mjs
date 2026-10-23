@@ -15,6 +15,7 @@ export class DesktopPresentation {
     previousReactionId,
     previousMessageId,
     onMessageId = () => {},
+    onThreadRejected = null,
     onReactionId = () => {},
     onError = () => {},
     resumed = false,
@@ -26,6 +27,8 @@ export class DesktopPresentation {
     this.previousReactionId = previousReactionId;
     this.previousMessageId = previousMessageId;
     this.onMessageId = onMessageId;
+    this.onThreadRejected = onThreadRejected;
+    this.threadFallbackAttempted = false;
     this.onReactionId = onReactionId;
     this.onError = onError;
     this.latestContent = normalizeProgressContent(
@@ -151,13 +154,24 @@ export class DesktopPresentation {
       content: JSON.stringify(card),
     };
     if (this.sourceMessageId) {
-      return this.channel.rawClient.im.v1.message.reply({
-        path: { message_id: this.sourceMessageId },
-        data: {
-          ...data,
-          ...(this.replyInThread ? { reply_in_thread: true } : {}),
-        },
-      });
+      let response;
+      try {
+        response = await this.channel.rawClient.im.v1.message.reply({
+          path: { message_id: this.sourceMessageId },
+          data: { ...data, ...(this.replyInThread ? { reply_in_thread: true } : {}) },
+        });
+      } catch (error) {
+        if (!await this.acceptThreadRejection(error)) throw error;
+        return this.channel.rawClient.im.v1.message.reply({
+          path: { message_id: this.sourceMessageId }, data,
+        });
+      }
+      if (await this.acceptThreadRejection(response)) {
+        return this.channel.rawClient.im.v1.message.reply({
+          path: { message_id: this.sourceMessageId }, data,
+        });
+      }
+      return response;
     }
     return this.channel.rawClient.im.v1.message.create({
       params: { receive_id_type: detectReceiveIdType(this.chatId) },
@@ -166,6 +180,18 @@ export class DesktopPresentation {
         ...data,
       },
     });
+  }
+
+  async acceptThreadRejection(result) {
+    if (!this.replyInThread || this.previousMessageId || this.messageId ||
+        this.threadFallbackAttempted || typeof this.onThreadRejected !== "function") return false;
+    const payload = result?.response?.data ?? result;
+    if (![230071, 230072].includes(payload?.code) ||
+        payload?.data?.message_id || payload?.message_id || result?.data?.message_id) return false;
+    this.threadFallbackAttempted = true;
+    if (await this.onThreadRejected(payload.code) !== true) return false;
+    this.replyInThread = false;
+    return true;
   }
 
   startTyping() {

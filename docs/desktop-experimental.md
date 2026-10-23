@@ -156,10 +156,17 @@ match the Codex Desktop App Tools API limit.
 
 ### Long-task topic replies
 
-Set `taskReplyMode` to `long_tasks_in_thread` in the existing private `group`
-settings or group-control file to route clear work requests from the group's
-main timeline into a new topic. A control-file value overrides the project
-setting. Missing or unknown values use `inline`.
+Set `taskReplyMode` to `long_tasks_in_thread` for the existing connection:
+
+- Linked direct message: private project `desktop` settings or
+  `<data-root>/desktop/desktop-control.json`.
+- Configured group: private project `group` settings or its group-control file.
+- Office native direct message: the assistant's existing
+  `<assistant-bridge-home>/native-desktop-control.json`.
+
+A control-file value overrides its project setting. Missing or unknown values
+use `inline`. This routes clear work requests from the main timeline into a
+new Feishu topic while retaining the same bound native Codex Desktop thread.
 
 Routing uses only the current message text. It opens a topic for a clear action
 paired with a named deliverable, or an explicit request such as “开个话题”.
@@ -171,6 +178,29 @@ has a thread stays in that topic, even if its text asks for an inline reply.
 This setting affects newly accepted requests and does not move existing cards
 or change the saved reply route of work already in progress. After updating the
 source, run `desktop prepare` and restart the adapter to use the new policy.
+For Office native execution, use the normal per-assistant stop/start lifecycle.
+
+A linked private topic follow-up first passes the existing access policy and
+strict bot app, owner and root catalog binding checks. Its execution uses the
+original private root scope; the Feishu topic IDs are retained only as reply
+metadata. Binding mismatches stop that intake. Commands in this bound scope
+are handled by the same native thread: `/stop` requests stopping unfinished
+work, `/status` reports its actual state, and session-changing commands cannot
+alter the fixed binding. Legacy buttons for that private chat are ignored;
+configured group controls retain their existing rules.
+
+The selected reply route is saved before the first progress card. New threaded
+private requests suppress the extra completion notification, including after an
+inline downgrade. The final green completion card is retained. Only an explicit
+numeric Feishu rejection `230071` or `230072`, with no message receipt and no
+previous card, can permit one inline reply after persisting the new route.
+Timeouts, unknown failures and missing receipts cannot trigger a second create.
+After a restart, a saved card-create intent without a receipt remains uncertain;
+no replacement card, final text or media is sent for that request. Existing
+saved requests retain their prior routing policy.
+
+These changes have source and syntax review only. Generator execution and real
+Feishu topic delivery still need separately authorized acceptance evidence.
 
 ### Completion notifications (v0.1.1)
 
@@ -182,7 +212,7 @@ message rather than only editing the existing card; notification banners and
 sounds still follow your Feishu and operating-system notification settings.
 
 The option is explicit in the new example config and disabled when absent.
-It applies to newly accepted direct-chat requests; it does not notify groups
+It applies to newly accepted inline direct-chat requests; it does not notify groups
 or replay old completed requests. Sending intent and receipts are persisted.
 An ambiguous send result is marked uncertain and is not automatically sent
 again. This avoids duplicate reminders at the cost of a possible missed

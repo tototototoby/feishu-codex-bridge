@@ -23,9 +23,9 @@ manual repair is needed; do not select a version just by its modification time.
 
 After updating this source, use the normal per-assistant `office stop <key>`
 and `office start <key>` lifecycle. A stopped assistant's generated CLI can
-upgrade from v1, v2, v3, v4, v5 or v6 to v7 only when its bytes match the corresponding content
+upgrade from v1 through v7 to v8 only when its bytes match the corresponding content
 rebuilt from the pinned upstream package at the current installation location.
-A v7 copy is reused only when it matches the expected content. Unknown/manual changes
+A v8 copy is reused only when it matches the expected content. Unknown/manual changes
 are rejected rather than overwritten; moving the installation or dependencies
 can likewise require review of the private generated copy. Private profiles,
 credentials and workspaces are not recreated during this upgrade.
@@ -162,9 +162,14 @@ in the data directory, never in source control.
 
 Set `enabled: true` only after reviewing both files and the recipient mapping,
 then use the normal `office stop <key>` / `office start <key>` lifecycle.
-Absent or explicitly disabled native configuration keeps the CLI route.
-Invalid enabled configuration consumes the request without starting a second
-executor or visibility mirror. Availability notices require readback of the
+By default, absent or explicitly disabled native configuration keeps the CLI
+route. After reviewing a native binding, set `nativeExecutionRequired: true` in
+that assistant's private `assistant.json` to require this execution route. The
+optional field must be boolean and defaults to `false`. When required, missing,
+disabled or invalid native configuration consumes the request through the
+existing unavailable-connection handling, without starting a second CLI
+executor or visibility mirror. Invalid enabled configuration also uses this
+handling when the field is absent. Availability notices require readback of the
 original sender, chat and message, and persist a sending intent before sending;
 uncertain intents are not automatically repeated. Local readiness confirms
 binding and state only, not actual endpoint or business-message delivery.
@@ -172,9 +177,17 @@ binding and state only, not actual endpoint or business-message delivery.
 `/stop` steers the current native thread to stop unfinished work; it does not
 guarantee forced interruption. `/status` asks that thread for its actual state.
 Session-changing commands such as `/new`, `/reset`, `/resume`, `/cd`, `/ws`
-and `/timeout` return a fixed-connection explanation. Activation does not
-replay old business requests. Incoming attachments and quoted messages follow
+and `/timeout` return a fixed-connection explanation. While native execution is
+enabled, other commands stay in the native route, and legacy card actions and
+cloud-document comment execution are ignored. These guards prevent a second
+CLI executor; comment messages are not newly routed into the native thread.
+Activation does not replay old business requests. Incoming attachments and quoted messages follow
 the normal media/reference handling, with missing items reported explicitly.
+
+To enable long-task Feishu topics for this existing native connection, set
+`taskReplyMode: "long_tasks_in_thread"` in its native control file. The selected
+route is persisted per request; see [topic routing and uncertain receipt
+handling](desktop-experimental.md#long-task-topic-replies).
 
 Requested outgoing deliverables must be explicit Markdown links to absolute
 Windows paths between `<!-- office-output:start -->` and
