@@ -2,7 +2,7 @@ import { mkdir, realpath, lstat, open, writeFile, readdir } from 'node:fs/promis
 import { resolve, relative, isAbsolute, join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { FIXED_GROUP_ID } from './group-recorder.mjs';
-import { isAllowedMemberImageRequest } from './group-policy.mjs';
+import { groupScopeReplyOptions, isAllowedMemberImageRequest } from './group-policy.mjs';
 
 const contexts = new WeakSet();
 const MAX_INPUT_BYTES = 25 * 1024 * 1024;
@@ -109,7 +109,7 @@ export async function createMemberImageContext({ control, msg, botOwnerId, chann
   const requestId = randomUUID();
   const context = { requestId, workspace, channel, sourceMessageId: msg.messageId, senderId: msg.senderId,
     botAppId: control.botAppId, botOpenId: channel.botIdentity?.openId,
-    replyInThread: Boolean(msg.threadId), inputs: [], artifacts: [], rejectedArtifactCount: 0,
+    replyInThread: groupScopeReplyOptions(msg, control).replyInThread === true, inputs: [], artifacts: [], rejectedArtifactCount: 0,
     startedAt: 0, nativeRoots: [], seenItems: new Set(),
     expectsImage: /图|海报|画|logo|image|绘|设计|改一下|修改|再改|调整|美化|生成/i.test(msg.content || ''),
     groupContext };

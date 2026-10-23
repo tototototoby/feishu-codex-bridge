@@ -154,6 +154,24 @@ reports that the image task remains incomplete.
 Historical thread pagination uses a 20,000-character per-item read limit to
 match the Codex Desktop App Tools API limit.
 
+### Long-task topic replies
+
+Set `taskReplyMode` to `long_tasks_in_thread` in the existing private `group`
+settings or group-control file to route clear work requests from the group's
+main timeline into a new topic. A control-file value overrides the project
+setting. Missing or unknown values use `inline`.
+
+Routing uses only the current message text. It opens a topic for a clear action
+paired with a named deliverable, or an explicit request such as “开个话题”.
+Routine chat, vague requests, questions about how to do something, quoted text,
+attachments, group history and run duration do not qualify. “别开话题” and
+“群里直接回” opt out for a new main-timeline request. A message that already
+has a thread stays in that topic, even if its text asks for an inline reply.
+
+This setting affects newly accepted requests and does not move existing cards
+or change the saved reply route of work already in progress. After updating the
+source, run `desktop prepare` and restart the adapter to use the new policy.
+
 ### Completion notifications (v0.1.1)
 
 Set `desktop.notifyCompletion` to `true` in your private project config to

@@ -5,6 +5,7 @@ import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { DesktopPresentation } from "./desktop-presentation.mjs";
 import { sendCompletionNoticeOnce } from "./completion-notifier.mjs";
 import { discoverAppToolsEndpoint } from "./app-tools-endpoint.mjs";
+import { groupScopeReplyOptions, isVerifiedGroupControl } from "./group-policy.mjs";
 import {
   configuredDesktopChatId,
   configuredDesktopThreadId,
@@ -52,6 +53,7 @@ export class DesktopDispatcher {
   constructor({
     scope = configuredDesktopChatId(),
     officeBinding = null,
+    groupControl = null,
     promptInstructions = [],
     onFinal = async () => {},
     controlPath,
@@ -77,6 +79,10 @@ export class DesktopDispatcher {
     if (officeBinding && [configuredDesktopChatId(), configuredGroupChatId()].includes(scope)) throw new Error("office-desktop-scope-reserved");
     this.officeBinding = officeBinding ? Object.freeze({ ...officeBinding }) : null;
     this.scope = scope;
+    this.groupControl = !officeBinding && scope === configuredGroupChatId() &&
+      groupControl?.groupId === scope && isVerifiedGroupControl(groupControl)
+      ? groupControl
+      : null;
     this.promptInstructions = promptInstructions;
     this.onFinal = onFinal;
     this.controlPath = controlPath ?? desktopControlPath(scope);
@@ -356,7 +362,9 @@ export class DesktopDispatcher {
       requestId: randomUUID(),
       messageId,
       ...(this.officeBinding ? { chatId: this.scope, senderId: msg.senderId, appId: this.officeBinding.appId } : {}),
-      replyInThread: Boolean(msg.threadId),
+      replyInThread: this.groupControl
+        ? groupScopeReplyOptions(msg, this.groupControl).replyInThread === true
+        : Boolean(msg.threadId),
       completionNoticeEligible: this.control?.notifyCompletion === true,
       completionNoticeState: null,
       status: "preparing",
