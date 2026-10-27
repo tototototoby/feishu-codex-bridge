@@ -41,6 +41,8 @@ export class DesktopPresentation {
     this.paused = false;
     this.persistedPaused = false;
     this.writeFailed = false;
+    this.progressWriteRecoveryEligible = false;
+    this.finalRecoveryAttempted = false;
     this.retryAt = 0;
     this.retryFailures = 0;
     this.updateTask = null;
@@ -82,14 +84,7 @@ export class DesktopPresentation {
           this.scheduleRetry("card-resume", response);
           return null;
         }
-        const message = response?.data?.items?.find((item) => item.message_id === this.previousMessageId);
-        const savedCard = JSON.parse(message?.body?.content ?? "null");
-        const sender = message?.sender;
-        if (!hasApiSuccessCode(response) || message?.chat_id !== this.chatId ||
-          message?.parent_id !== this.sourceMessageId || message?.msg_type !== "interactive" ||
-          sender?.sender_type !== "app" || sender?.id_type !== "app_id" ||
-          sender?.id !== this.channel.opts?.appId || savedCard?.schema !== "2.0" ||
-          savedCard?.config?.streaming_mode === true || !["桌面任务进度", "任务回复", "任务已暂停"].includes(savedCard?.header?.title?.content)) {
+        if (!isOwnedProgressCard(response, this.previousMessageId, this)) {
           this.writeFailed = true;
           this.reportError("card-resume", "identity-or-card-mismatch", numericFailureDetails(response));
           return null;
@@ -265,6 +260,7 @@ export class DesktopPresentation {
             return false;
           }
           this.writeFailed = true;
+          this.progressWriteRecoveryEligible = !completed && !paused && isRecoverableProgressFailure(response);
           this.reportError("card-update", "failed", numericFailureDetails(response));
           return false;
         }
@@ -282,6 +278,7 @@ export class DesktopPresentation {
           return false;
         }
         this.writeFailed = true;
+        this.progressWriteRecoveryEligible = !completed && !paused && isRecoverableProgressFailure(error);
         this.reportError("card-update", "failed", numericFailureDetails(error));
         return false;
       }
@@ -328,8 +325,13 @@ export class DesktopPresentation {
       return { kind: "uncertain", messageId: this.messageId };
     }
 
+    // Let an in-flight progress PATCH settle before checking its failure or
+    // reading back the same card. finishTask serializes concurrent finishes.
+    if (this.updateTask) await this.updateTask;
     let updated = false;
+    if (this.writeFailed) updated = await this.recoverFinalCardOnce(intent);
     for (let attempt = 0; attempt < 3 && !this.writeFailed; attempt++) {
+      if (updated) break;
       if (this.retryAt > Date.now()) await delay(Math.min(60_000, this.retryAt - Date.now()));
       updated = await this.enqueueSetContent(this.latestContent);
       if (updated) break;
@@ -345,6 +347,46 @@ export class DesktopPresentation {
     this.closed = true;
     await this.cleanupTyping();
     return { kind: "streamed", receipt: { messageId: this.messageId } };
+  }
+
+  async recoverFinalCardOnce(intent) {
+    if (!this.writeFailed || !this.progressWriteRecoveryEligible ||
+        !this.messageId || this.finalRecoveryAttempted) return false;
+    // Claim the only recovery before any await. This path never creates a
+    // message or replays business work, and does not classify HTTP 400 as transient.
+    this.finalRecoveryAttempted = true;
+    const messageId = this.messageId;
+    try {
+      const response = await this.channel.rawClient.im.v1.message.get({
+        path: { message_id: messageId },
+        params: { card_msg_content_type: "user_card_content" },
+      });
+      if (!isOwnedProgressCard(response, messageId, this)) {
+        this.reportError("card-final-recovery", "identity-or-card-mismatch", numericFailureDetails(response));
+        return false;
+      }
+      const completed = intent.state === "completed";
+      const paused = intent.state === "paused";
+      const result = await this.channel.rawClient.im.v1.message.patch({
+        path: { message_id: messageId },
+        data: { content: JSON.stringify(buildProgressCard(intent.content, completed, paused, intent.successTheme)) },
+      });
+      if (!hasApiSuccessCode(result)) {
+        this.reportError("card-final-recovery", "failed", numericFailureDetails(result));
+        return false;
+      }
+      this.persistedContent = intent.content;
+      this.persistedCompleted = completed;
+      this.persistedPaused = paused;
+      this.retryFailures = 0;
+      this.retryAt = 0;
+      this.writeFailed = false;
+      this.reportError("card-final-recovery", "recovered");
+      return true;
+    } catch (error) {
+      this.reportError("card-final-recovery", "failed", numericFailureDetails(error));
+      return false;
+    }
   }
 
   async shutdown(content = "桌面桥接暂时暂停；恢复后会继续同步。") {
@@ -463,13 +505,44 @@ function hasApiSuccessCode(response) {
   return typeof response?.code === "number" && response.code === 0;
 }
 
+function isOwnedProgressCard(response, messageId, presentation) {
+  if (!hasApiSuccessCode(response)) return false;
+  const message = response?.data?.items?.find((item) => item.message_id === messageId);
+  const sender = message?.sender;
+  if (!message || message.chat_id !== presentation.chatId ||
+      message.parent_id !== presentation.sourceMessageId || message.msg_type !== "interactive" ||
+      message.deleted === true || message.deleted === "true" ||
+      message.is_deleted === true || message.is_deleted === "true" ||
+      sender?.sender_type !== "app" || sender?.id_type !== "app_id" ||
+      typeof presentation.channel.opts?.appId !== "string" ||
+      !presentation.channel.opts.appId || sender?.id !== presentation.channel.opts.appId) return false;
+  try {
+    const card = JSON.parse(message.body?.content ?? "null");
+    return card?.schema === "2.0" && card?.config?.streaming_mode !== true &&
+      ["桌面任务进度", "任务回复", "任务已暂停"].includes(card?.header?.title?.content);
+  } catch {
+    return false;
+  }
+}
+
+function isRecoverableProgressFailure(value) {
+  const { status, apiCode, extCode } = numericFailureDetails(value);
+  return status !== 401 && status !== 403 && apiCode === 230099 && extCode === 11310;
+}
+
 function numericFailureDetails(value) {
   const status = value?.response?.status ?? value?.status;
-  const apiCode = value?.response?.data?.code ?? value?.data?.code ??
+  const apiCode = value?.response?.data?.code ?? value?.data?.code ?? value?.apiCode ??
     (typeof value?.code === "number" ? value.code : undefined);
+  // Only extract the numeric extension from the SDK response message. Do not
+  // include its payload or message text in telemetry; retain sanitized details.
+  const responseMessage = value?.response?.data?.msg;
+  const extCode = value?.extCode ?? (typeof responseMessage === "string"
+    ? Number(responseMessage.match(/\bext\s*=\s*ErrCode:\s*(\d+)\b/i)?.[1]) : undefined);
   const details = {};
   if (Number.isInteger(status) && status >= 100 && status <= 599) details.status = status;
   if (Number.isInteger(apiCode) && apiCode >= 0) details.apiCode = apiCode;
+  if (Number.isInteger(extCode) && extCode >= 0) details.extCode = extCode;
   return details;
 }
 
