@@ -29,7 +29,45 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return applyTaskReplyPatch(applyMemberImagesPatch(patched));
+  return applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched)));
+}
+
+// Additional groups are opt-in through a private registry; preserve the pinned diff.
+function applySupplementalGroupsPatch(source) {
+  const replacements = [
+    ['import { canonicalPrivateExecutionMessage } from "__DESKTOP_MODULES__/task-reply-policy.mjs";',
+      'import { canonicalPrivateExecutionMessage } from "__DESKTOP_MODULES__/task-reply-policy.mjs";\nimport { createSupplementalGroupRuntime } from "__DESKTOP_MODULES__/supplemental-group-runtime.mjs";\nimport { supplementalGroupRegistryPath, configuredDesktopThreadId } from "__DESKTOP_MODULES__/config.mjs";'],
+    ['  const media = new MediaCache(channel, deps.appPaths?.mediaDir);',
+      `  const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  let resolveSupplementalIdentityReady;
+  const supplementalIdentityReady = new Promise((resolve) => { resolveSupplementalIdentityReady = resolve; });
+  const supplementalGroups = createSupplementalGroupRuntime({
+    channel, appId: cfg.accounts.app.id, getBotOwnerId: () => controls.botOwnerId,
+    identityReady: supplementalIdentityReady,
+    registryPath: supplementalGroupRegistryPath(),
+    media, attachmentPolicy: controls.profileConfig.attachments,
+    reservedGroupIds: [configuredDesktopChatId(), FIXED_GROUP_ID].filter((id) => /^oc_[0-9a-f]{32}$/.test(id ?? "")),
+    reservedThreadIds: [configuredDesktopThreadId(), groupSettings().threadId].filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id ?? "")),
+    logger: (event) => log.info("supplemental-group", event.event, event),
+  });`],
+    ['          groupDispatcher: () => groupDesktopDispatcher,',
+      '          groupDispatcher: () => groupDesktopDispatcher,\n          supplementalGroups,'],
+    ['  // Group intake is guarded before stock access, commands, preview logs or lookups.',
+      '  // Explicit supplemental bindings consume their group before the legacy guard.\n  if (await deps.supplementalGroups?.handleMessage(msg)) return;\n  // Group intake is guarded before stock access, commands, preview logs or lookups.'],
+    ['    cardAction: async (evt) => {',
+      '    cardAction: async (evt) => {\n      if (await supplementalGroups.handleCardAction(evt)) return;'],
+    ['  await channel.connect();\n  await desktopDispatcher?.initialize();',
+      '  await channel.connect();\n  supplementalGroups.setChannel(channel);\n  await desktopDispatcher?.initialize();'],
+    ['  await ownerRefresh.start();',
+      '  try {\n    await ownerRefresh.start();\n  } finally {\n    resolveSupplementalIdentityReady();\n  }\n  await supplementalGroups.initialize();'],
+    ['      await groupDesktopDispatcher?.close().catch(() => {});',
+      '      await supplementalGroups.close().catch(() => log.warn("supplemental-group", "close-failed", { code: "supplemental-close-failed" }));\n      await groupDesktopDispatcher?.close().catch(() => {});'],
+  ];
+  for (let index = 0; index < replacements.length; index++) {
+    const [before, after] = replacements[index];
+    source = replaceExactOnce(source, before, after, `Supplemental group patch anchor mismatch: ${index}`);
+  }
+  return source;
 }
 
 // Keep the pinned unified diff intact; every topic-routing anchor must be unique.

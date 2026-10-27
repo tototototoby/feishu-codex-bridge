@@ -58,6 +58,7 @@ export function desktopStatePath(scope) {
   return join(desktopRoot(), scope && scope === configuredGroupChatId() ? 'group-desktop-state.json' : 'desktop-dispatcher-state.json');
 }
 export function groupControlPath() { return join(desktopRoot(), 'group-control.json'); }
+export function supplementalGroupRegistryPath() { return join(desktopRoot(), 'supplemental-groups.json'); }
 export function groupHistoryDirectory() { return join(desktopRoot(), 'group-history'); }
 export function groupDatabasePath() { return join(groupHistoryDirectory(), 'messages.sqlite'); }
 export function groupMediaStatePath() { return join(desktopRoot(), 'group-media-outbox.json'); }

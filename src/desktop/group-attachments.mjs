@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import { join, basename, extname, relative, isAbsolute, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import crossSpawn from 'cross-spawn';
+import { isVerifiedSupplementalGroupBinding, supplementalGroupMessageDisposition } from './supplemental-group-binding.mjs';
 import { FIXED_GROUP_ID, FIXED_OWNER_OPEN_ID } from './group-recorder.mjs';
 import { isMemberImageContext, memberImageFormat, stageMemberImageInputs, verifyMemberImageReference, verifyMemberImageSource } from './group-member-images.mjs';
 
@@ -44,16 +45,31 @@ async function download(cliPath, directory, messageId, key, type, targetName) {
   });
 }
 
-export async function prepareGroupAttachments({ control, msg, context, directAttachments = [], cliPath, imageTask }) {
+export async function prepareGroupAttachments({ binding = null, control, msg, context, directAttachments = [], cliPath, imageTask, botOwnerId, channel }) {
+  if (binding !== null) {
+    if (!isVerifiedSupplementalGroupBinding(binding) || imageTask || control !== binding.control || context?.binding !== binding ||
+        control.groupId !== binding.groupId || control.ownerOpenId !== binding.ownerOpenId || control.botAppId !== binding.appId ||
+        context.groupId !== binding.groupId || context.appId !== binding.appId || context.desktopThreadId !== binding.threadId ||
+        msg?.chatId !== binding.groupId || botOwnerId !== binding.ownerOpenId || channel?.opts?.appId !== binding.appId ||
+        !['owner-task', 'trusted-member-task'].includes(supplementalGroupMessageDisposition(msg, botOwnerId, binding))) throw new Error('attachment-binding-mismatch');
+    const originals = await channel.fetchRawMessage(msg.messageId);
+    if (!originals.some((original) => original.message_id === msg.messageId && original.chat_id === binding.groupId &&
+        !original.deleted && (original.sender?.id ?? original.sender_id) === msg.senderId &&
+        (original.sender?.sender_type ?? original.sender?.type ?? original.sender_type) === 'user')) throw new Error('attachment-request-source-mismatch');
+  }
   if (imageTask) return prepareMemberImageAttachments({ control, msg, context, directAttachments, cliPath, imageTask });
-  if (control?.groupId !== FIXED_GROUP_ID || context?.groupId !== FIXED_GROUP_ID || msg?.chatId !== FIXED_GROUP_ID || msg.senderId !== FIXED_OWNER_OPEN_ID) throw new Error('attachment-scope-mismatch');
+  if (!binding && (control?.groupId !== FIXED_GROUP_ID || context?.groupId !== FIXED_GROUP_ID || msg?.chatId !== FIXED_GROUP_ID || msg.senderId !== FIXED_OWNER_OPEN_ID)) throw new Error('attachment-scope-mismatch');
   const root = await realpath(control.groupWorkspace);
+  if (binding && relative(binding.groupWorkspace, root)) throw new Error('attachment-workspace-binding-mismatch');
   const input = await ownedDirectory(root, join(root, 'input'));
   const directory = await ownedDirectory(root, join(input, 'feishu-attachments'));
   const accepted = []; const seen = new Set(); let total = 0;
   for (const attachment of directAttachments.slice(0, 10)) {
     try {
     if (attachment.decision !== 'accepted' || !attachment.absPath) continue;
+    if (binding && (attachment.sourceMessageId !== msg.messageId ||
+        attachment.groupId !== undefined && attachment.groupId !== binding.groupId ||
+        attachment.appId !== undefined && attachment.appId !== binding.appId)) continue;
     const size = (await stat(attachment.absPath)).size;
     if (size > MAX_BYTES || total + size > MAX_TOTAL) continue;
     const extension = extname(attachment.originalName || attachment.absPath).slice(0, 12);
@@ -75,6 +91,13 @@ export async function prepareGroupAttachments({ control, msg, context, directAtt
     (record.messageId === linked || wantsFile && Math.abs(Date.parse(record.timestamp) - requestTime) <= 120000)).slice(0, 3);
   for (const record of records) {
     if (accepted.length >= 10) break;
+    if (binding) {
+      try {
+        if (channel?.opts?.appId !== binding.appId) throw new Error('attachment-app-mismatch');
+        const originals = await channel.fetchRawMessage(record.messageId);
+        if (!originals.some((original) => original.message_id === record.messageId && original.chat_id === binding.groupId && !original.deleted)) throw new Error('attachment-original-mismatch');
+      } catch { historyMissingCount++; continue; }
+    }
     for (const key of (record.attachmentRefs || []).slice(0, 1)) {
       if (seen.has(key)) continue; seen.add(key);
       const image = record.msgType === 'image';

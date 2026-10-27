@@ -241,3 +241,82 @@ between desktop releases. The adapter may require a compatible installed
 version and may need an update after a Desktop or App Tools change. There is no
 compatibility matrix, uptime commitment, exactly-once delivery promise, or
 long-term support guarantee for this experimental integration.
+
+
+## Explicit supplemental group bindings
+
+The experimental Desktop adapter can route additional Feishu groups to distinct
+existing native Codex chats while keeping the configured private chat and the
+original `group` integration. This feature is opt-in through
+`<data-root>/desktop/supplemental-groups.json`; a missing registry enables no
+additional group. Keep the registry, control documents, history, outboxes and
+request state in private storage outside this source checkout. Do not commit
+real group IDs, owner IDs, app IDs, thread IDs, names or machine paths.
+
+The registry is a schema-version-1 object with `enabled: true`, `appId`,
+`ownerOpenId`, a nonempty `reservedThreadIds` array, and a nonempty `groups`
+array. App and owner must equal the running bot's verified identity. Reserved
+threads must include every unrelated native chat that must remain unavailable
+to these bindings. The adapter also reserves the configured private and legacy
+group chat/thread IDs. At least one configured reserved chat and thread is
+required. Each group entry uses the following fields:
+
+| Field | Meaning |
+| --- | --- |
+| `groupId`, `groupName` | Explicit Feishu group identity; IDs and names must be unique in the registry. |
+| `appId`, `ownerOpenId` | The same verified app and owner as the registry. |
+| `threadId`, `anchorThreadId` | Existing native execution chat and trusted endpoint discovery anchor, expressed as UUIDs. Execution chats must be distinct from all reserved and other bound chats. |
+| `approvedAt`, `effectiveFrom` | Canonical UTC ISO timestamps, already effective, with effective time at or after approval. |
+| `groupWorkspace`, `dataDir` | Distinct absolute paths for shared inputs/outputs and private recorded history. Content roots cannot overlap one another across bindings. |
+| `recorderControlPath`, `controlPath`, `statePath`, `mediaStatePath` | Distinct absolute private file paths; none may be inside a content root. |
+| `nativeTargetWorkspace` | Optional absolute native destination used only as routing context; it does not grant permissions or change the existing native chat. |
+
+The recorder control document must use `schemaVersion: 1`, `enabled: true`,
+matching `groupId`, `groupName`, `ownerOpenId`, `botAppId`, `groupWorkspace` and
+`dataDir`, plus `historyIdentity: "user"`, `requireMention: true`,
+`groupModel: "gpt-6.1-sol"`, `groupReasoningEffort: "high"` and
+`taskReplyMode: "long_tasks_in_thread"`. Its `trustedMemberTasks` object must
+contain `enabled: true`, `allowedSenderMode: "all_group_members"`, an empty
+`allowedSenderOpenIds` array, and the matching `groupId`, `appId`,
+`desktopThreadId`, `approvedAt` and `effectiveFrom`. The native Desktop control
+at `controlPath` must contain the exact `threadId`, a valid installed Codex App
+Tools `pipePath`, `taskReplyMode: "long_tasks_in_thread"` and completion
+notifications disabled (`notifyCompletion` must not be true). Registry and
+control documents must be regular files, not symbolic links, and each is
+limited to 4 MiB. Paths are intentionally supplied only in private files;
+no binding is created from a group message or discovered automatically.
+
+Create the authorized workspace, history directory and private control/state
+parent directories before starting the adapter. Each binding keeps its own
+history database, dispatcher state, media outbox and command receipts. New
+state requires matching group/app/native-chat/owner/anchor and source
+sender/mention/time/activation evidence. Invalid supplemental state blocks
+that binding rather than replaying uncertain work or using a CLI fallback.
+Pending command receipts are in memory; uncertain sends are never retried
+automatically. A malformed registry fails group routing closed while preserving
+the reserved legacy/private paths.
+
+A real human member must actually mention the bot, and the message must be at
+or after the recorded approval and effective times. Every accepted request
+continues the existing native chat with its actual tools and permissions. The
+shared group workspace governs staged attachments and returnable files; it
+is not a sandbox around the native chat. Only the verified owner can use
+`/help`, `/status` and `/stop`; `/stop` requests cooperative stopping in that
+same chat and does not prove forced interruption. Other slash commands cannot
+reset, switch, restore or create chats. Cards in this scope do not execute
+callback commands.
+
+The standard progress card and long-task topic policy apply per request. Only
+content inside that request's exact `feishu-reply` markers is eligible for
+forwarding; unrelated Desktop progress and tool activity are not relayed.
+Images and ZIP deliverables must resolve inside the bound group workspace,
+and the media outbox rechecks source group and sender evidence before sending.
+Attachments are staged under `input/feishu-attachments`; model instructions
+request deliverable copies under `output`. History remains untrusted reference
+material and incomplete synchronization is disclosed to the model.
+
+This change has only static validation in its authoring session. A syntax check
+or successful preparation does not establish native endpoint availability,
+real mention routing, topic behavior, final delivery or attachment readback.
+Those require separately authorized live validation with the intended bot,
+group and native chat.
