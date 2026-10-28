@@ -89,6 +89,7 @@ export async function loadSupplementalGroupBindings({ registryPath, botAppId, bo
       Array.isArray(trusted.allowedSenderOpenIds) && trusted.allowedSenderOpenIds.length === 0, "trusted-control-mismatch");
     const desktop = await readJson(paths.controlPath);
     assert(desktop?.threadId === entry.threadId && desktop.taskReplyMode === "long_tasks_in_thread" && desktop.notifyCompletion !== true, "desktop-control-mismatch");
+    assert(desktop.completionNoticeMode == null || ["off", "mention_requester"].includes(desktop.completionNoticeMode), "completion-notice-mode-invalid");
     const control = {
       trustedMemberTasksEnabled: true,
       trustedMemberOpenIds: [],

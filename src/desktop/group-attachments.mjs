@@ -9,6 +9,10 @@ import { isMemberImageContext, memberImageFormat, stageMemberImageInputs, verify
 
 const MAX_BYTES = 25 * 1024 * 1024;
 const MAX_TOTAL = 75 * 1024 * 1024;
+function attachmentTime(value) {
+  const time = Number(value);
+  return Number.isFinite(time) && time > 0 ? time < 100_000_000_000 ? time * 1000 : time : NaN;
+}
 function assertInside(root, path) {
   const part = relative(root, path);
   if (!part || part.startsWith('..') || isAbsolute(part)) throw new Error('attachment-path-outside-workspace');
@@ -45,7 +49,7 @@ async function download(cliPath, directory, messageId, key, type, targetName) {
   });
 }
 
-export async function prepareGroupAttachments({ binding = null, control, msg, context, directAttachments = [], cliPath, imageTask, botOwnerId, channel }) {
+export async function prepareGroupAttachments({ binding = null, control, msg, context, directAttachments = [], allowedAttachmentMessageIds = [], cliPath, imageTask, botOwnerId, channel }) {
   if (binding !== null) {
     if (!isVerifiedSupplementalGroupBinding(binding) || imageTask || control !== binding.control || context?.binding !== binding ||
         control.groupId !== binding.groupId || control.ownerOpenId !== binding.ownerOpenId || control.botAppId !== binding.appId ||
@@ -66,7 +70,7 @@ export async function prepareGroupAttachments({ binding = null, control, msg, co
   const accepted = []; const seen = new Set(); let total = 0;
   for (const attachment of directAttachments.slice(0, 10)) {
     try {
-    if (attachment.decision !== 'accepted' || !attachment.absPath) continue;
+    if (attachment.decision !== 'accepted' || !attachment.absPath || attachment.sourceMessageId !== msg.messageId) continue;
     if (binding && (attachment.sourceMessageId !== msg.messageId ||
         attachment.groupId !== undefined && attachment.groupId !== binding.groupId ||
         attachment.appId !== undefined && attachment.appId !== binding.appId)) continue;
@@ -83,19 +87,20 @@ export async function prepareGroupAttachments({ binding = null, control, msg, co
     } catch { /* One unavailable direct attachment does not discard the others. */ }
   }
   const directAcceptedCount = accepted.length; let historyMissingCount = 0;
-  const requestTime = Number(msg.createTime) || Date.now();
-  const linked = msg.replyToMessageId || msg.rootId;
-  const wantsFile = /附件|文件|压缩|裁图|原图|大小|尺寸|调整|处理/.test(msg.content || '');
+  // The selector admits only this source and platform-verified explicit quotes.
+  // No keyword or proximity fallback may import another actor's or future files.
+  const allowed = new Set(allowedAttachmentMessageIds);
+  allowed.add(msg.messageId);
   const records = [...(context.messages || [])].reverse().filter((record) =>
-    !record.deleted && ['file', 'image'].includes(record.msgType) &&
-    (record.messageId === linked || wantsFile && Math.abs(Date.parse(record.timestamp) - requestTime) <= 120000)).slice(0, 3);
+    !record.deleted && ['file', 'image'].includes(record.msgType) && allowed.has(record.messageId)).slice(0, 3);
   for (const record of records) {
     if (accepted.length >= 10) break;
-    if (binding) {
+    if (channel) {
       try {
-        if (channel?.opts?.appId !== binding.appId) throw new Error('attachment-app-mismatch');
+        if (channel?.opts?.appId !== (binding?.appId ?? control.botAppId)) throw new Error('attachment-app-mismatch');
         const originals = await channel.fetchRawMessage(record.messageId);
-        if (!originals.some((original) => original.message_id === record.messageId && original.chat_id === binding.groupId && !original.deleted)) throw new Error('attachment-original-mismatch');
+        if (!originals.some((original) => original.message_id === record.messageId && original.chat_id === (binding?.groupId ?? control.groupId) && !original.deleted &&
+          attachmentTime(original.create_time ?? original.createTime) <= attachmentTime(msg.createTime))) throw new Error('attachment-original-mismatch');
       } catch { historyMissingCount++; continue; }
     }
     for (const key of (record.attachmentRefs || []).slice(0, 1)) {

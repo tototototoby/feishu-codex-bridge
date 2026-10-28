@@ -29,7 +29,26 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched)));
+  return applyGroupRequestContextPatch(applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched))));
+}
+
+// Keep the pinned PATCH unchanged; group request isolation is an exact post-patch.
+function applyGroupRequestContextPatch(source) {
+  const replacements = [
+    ["import { prepareGroupAttachments } from \"__DESKTOP_MODULES__/group-attachments.mjs\";",
+      "import { prepareGroupAttachments } from \"__DESKTOP_MODULES__/group-attachments.mjs\";\nimport { prepareGroupRequestContext } from \"__DESKTOP_MODULES__/group-request-policy.mjs\";"],
+    ["      const reference = { source: context.source, groupId: FIXED_GROUP_ID, syncStatus: context.syncStatus,\n        messages: context.messages.filter((message) => message.messageId !== msg.messageId) };\n      while (JSON.stringify(reference).length > 20_000 && reference.messages.length) reference.messages.shift();",
+      "      const { referenceContext, allowedAttachmentMessageIds, taskEnvelope } = await prepareGroupRequestContext({\n        msg, context, channel, groupId: FIXED_GROUP_ID, appId: groupControl.botAppId, ownerOpenId: FIXED_OWNER_OPEN_ID });"],
+    ["msg, context, directAttachments: attachments,\n        cliPath: groupControl.cliPath",
+      "msg, context, directAttachments: attachments, allowedAttachmentMessageIds, channel,\n        cliPath: groupControl.cliPath"],
+    ["attachments, referenceContext: reference,",
+      "attachments, referenceContext, taskEnvelope,"],
+  ];
+  for (let index = 0; index < replacements.length; index++) {
+    const [before, after] = replacements[index];
+    source = replaceExactOnce(source, before, after, `Group request context patch anchor mismatch: ${index}`);
+  }
+  return source;
 }
 
 // Additional groups are opt-in through a private registry; preserve the pinned diff.

@@ -3,6 +3,7 @@ import { DesktopDispatcher } from "./desktop-dispatcher.mjs";
 import { GroupRecorder, DEFAULT_CLI_PATH } from "./group-recorder.mjs";
 import { GroupMedia } from "./group-media.mjs";
 import { prepareGroupAttachments } from "./group-attachments.mjs";
+import { prepareGroupRequestContext } from "./group-request-policy.mjs";
 import { taskScopeReplyOptions } from "./task-reply-policy.mjs";
 import {
   loadSupplementalGroupBindings,
@@ -13,55 +14,11 @@ import {
 const CHAT_ID_RE = /^oc_[0-9a-f]{32}$/;
 const OPEN_ID_RE = /^ou_[A-Za-z0-9_-]{8,128}$/;
 const APP_ID_RE = /^cli_[A-Za-z0-9_-]{8,128}$/;
-const MAX_REFERENCE_MESSAGES = 100;
-const MAX_REFERENCE_CHARS = 20_000;
 const MAX_COMMAND_RECEIPTS = 2_000;
 
 function commandOf(content) {
   const first = typeof content === "string" ? content.trim().split(/\s+/, 1)[0] : "";
   return first?.startsWith("/") ? first.slice(1).toLowerCase() : "";
-}
-
-// Recorded messages remain untrusted. Never forward raw SDK payloads, attachment
-// keys, card callbacks, signed URLs or obvious credentials into the native prompt.
-function referenceText(value) {
-  if (typeof value !== "string") return "";
-  return value.slice(0, MAX_REFERENCE_CHARS)
-    .replace(/https?:\/\/[^\s<>"']*[?&](?:signature|sign|token|access_token|key|credential|x-amz-[^=\s&]+)=[^\s<>"']*/gi, "[redacted signed URL]")
-    .replace(/(?:Bearer\s+[A-Za-z0-9._~+\/-]+=*|\bsk-[A-Za-z0-9_-]{12,})/gi, "[redacted credential]")
-    .replace(/^.*(?:__bridge_cb|__claude_cb|(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|authorization)\s*[=:]).*$/gim, "[redacted credential or callback]");
-}
-
-function boundedReference(context, msg, binding) {
-  if (context?.binding !== binding || context.groupId !== binding.groupId || context.appId !== binding.appId || context.desktopThreadId !== binding.threadId) {
-    throw new Error("supplemental-group-context-scope-mismatch");
-  }
-  const sync = context.syncStatus ?? {};
-  const reference = {
-    source: `Lark group history: ${binding.groupName} (${binding.groupId})`,
-    groupId: binding.groupId,
-    syncStatus: {
-      backfillStatus: sync.backfillStatus ?? "unknown",
-      incrementalStatus: sync.incrementalStatus ?? "unknown",
-      lastCompleteSyncAt: sync.lastCompleteSyncAt ?? null,
-      historyMayBeIncomplete: sync.backfillStatus !== "complete" || sync.incrementalStatus === "partial" || Boolean(sync.lastErrorCategory),
-    },
-    messages: (Array.isArray(context.messages) ? context.messages : [])
-      .filter((record) => record && !record.deleted && record.messageId !== msg.messageId)
-      .slice(-MAX_REFERENCE_MESSAGES)
-      .map((record) => ({
-        messageId: referenceText(record.messageId),
-        senderId: referenceText(record.senderId),
-        senderName: referenceText(record.senderName),
-        senderType: referenceText(record.senderType),
-        timestamp: referenceText(record.timestamp),
-        msgType: referenceText(record.msgType),
-        content: referenceText(record.content),
-      })),
-  };
-  while (JSON.stringify(reference).length > MAX_REFERENCE_CHARS && reference.messages.length) reference.messages.shift();
-  if (JSON.stringify(reference).length > MAX_REFERENCE_CHARS) throw new Error("supplemental-group-reference-too-large");
-  return reference;
 }
 
 function promptInstructions(binding) {
@@ -274,7 +231,9 @@ export class SupplementalGroupRuntime {
     if (!canSubmit()) return;
     const context = await recorder.getContext({ requesterOpenId: binding.ownerOpenId, groupId: binding.groupId });
     if (!canSubmit()) return;
-    const referenceContext = boundedReference(context, msg, binding);
+    const { referenceContext, allowedAttachmentMessageIds, taskEnvelope } = await prepareGroupRequestContext({
+      msg, context, channel: this.channel, groupId: binding.groupId, appId: binding.appId, ownerOpenId: binding.ownerOpenId });
+    if (!canSubmit()) return;
     const resources = Array.isArray(msg.resources) ? msg.resources : [];
     let directAttachments = [];
     if (resources.length && this.media) {
@@ -282,10 +241,10 @@ export class SupplementalGroupRuntime {
       if (!canSubmit()) return;
     }
     const attachments = await prepareGroupAttachments({ binding, control: binding.control, msg, context, channel: this.channel,
-      directAttachments, botOwnerId: this.botOwnerId, cliPath: this.cliPath });
+      directAttachments, allowedAttachmentMessageIds, botOwnerId: this.botOwnerId, cliPath: this.cliPath });
     if (!canSubmit()) return;
     await dispatcher.dispatch({ channel: this.channel, msg, appId: this.appId, botOwnerId: this.botOwnerId,
-      attachments, referenceContext,
+      attachments, referenceContext, taskEnvelope,
       missingAttachmentCount: Math.max(0, resources.length - (attachments.directAcceptedCount ?? attachments.length)) + (attachments.historyMissingCount ?? 0) });
     this.log("dispatched", { groupId: binding.groupId, messageId: msg.messageId });
   }
