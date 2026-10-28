@@ -44,6 +44,8 @@ const TERMINAL_STATUSES = new Set([
   "notice_uncertain",
   "expired_notified",
   "cancelled_before_send",
+  // Set only after verified source withdrawal; never replay or resume delivery.
+  "source_withdrawn",
 ]);
 
 /**
@@ -236,8 +238,7 @@ export class DesktopDispatcher {
       // markers may supply group-visible text; never recover ambient progress.
       request.allowUnmarkedProgress = false;
       request.progressText = null;
-      request.progressPublicItems = [];
-      request.baselinePublicItems = [];
+      request.progressPublicItems = (request.progressPublicItems ?? []).filter((item) => item.markerRequestId === request.requestId);
       request.lastAnswerSnapshot = null;
       await this.persist();
       return;
@@ -355,8 +356,9 @@ export class DesktopDispatcher {
           }
           request.allowUnmarkedProgress = false;
           request.progressText = null;
-          request.progressPublicItems = [];
-          request.baselinePublicItems = [];
+          // Retain only explicitly marked progress receipts and the pre-send
+          // public-item baseline. Neither enables ambient text recovery.
+          request.progressPublicItems = request.progressPublicItems.filter((item) => item.markerRequestId === request.requestId);
           request.lastAnswerSnapshot = null;
         }
         if (request.status === "reply_sending") request.status = request.finalAnswer && request.presentationMessageId && request.deliveryMode === "normal-card-patch"
@@ -544,7 +546,6 @@ export class DesktopDispatcher {
       request.allowUnmarkedProgress = !this.supplementalGroup;
       if (this.supplementalGroup) {
         request.progressText = null;
-        request.baselinePublicItems = [];
         request.lastAnswerSnapshot = null;
       }
       await this.persist();
@@ -789,6 +790,18 @@ export class DesktopDispatcher {
           await this.persist();
         }
       }
+      if (snapshot && this.supplementalGroup) {
+        for (const request of pending) {
+          if (!["accepted", "delivery_uncertain"].includes(request.status) || requestsWithAnswer.has(request.requestId)) continue;
+          const progressUpdate = findMarkedProgress(request, snapshot.turns);
+          if (!progressUpdate) continue;
+          for (const metadata of progressUpdate.observedMetadata) {
+            request.progressPublicItems = mergePublicItemMetadata(request.progressPublicItems, metadata);
+          }
+          request.progressText = progressUpdate.text;
+          await this.persist();
+        }
+      }
       if (snapshot) {
         const progressOwner = [...pending].reverse().find((request) =>
           ["accepted", "delivery_uncertain"].includes(request.status) && !requestsWithAnswer.has(request.requestId)
@@ -802,9 +815,13 @@ export class DesktopDispatcher {
           }
         }
       }
-      const statusOwner = [...pending].reverse().find((request) => ["accepted", "delivery_uncertain"].includes(request.status));
-      if (!this.closed && statusOwner && Date.now() - (statusOwner.lastHeartbeatAt ?? 0) >= PROGRESS_INTERVAL_MS) {
+      const statusOwners = this.supplementalGroup
+        ? pending.filter((request) => ["accepted", "delivery_uncertain"].includes(request.status))
+        : [[...pending].reverse().find((request) => ["accepted", "delivery_uncertain"].includes(request.status))].filter(Boolean);
+      for (const statusOwner of statusOwners) {
+        if (this.closed || Date.now() - (statusOwner.lastHeartbeatAt ?? 0) < PROGRESS_INTERVAL_MS) continue;
         statusOwner.lastHeartbeatAt = Date.now();
+        // Reuse the existing presentation and its persisted topic/inline route.
         await statusOwner.presentation?.update(progressCardBody(statusOwner, snapshot, { markerOnly: this.supplementalGroup })).catch(() => {});
       }
       for (const request of pending) {
@@ -1227,6 +1244,7 @@ function normalizePublicItemMetadata(items) {
       turnId: typeof item.turnId === "string" ? item.turnId : "",
       phase: item.phase === "commentary" || item.phase === "final_answer" ? item.phase : "commentary",
       length: Number.isInteger(item.length) && item.length >= 0 ? item.length : 0,
+      ...(THREAD_ID_RE.test(item.markerRequestId ?? "") ? { markerRequestId: item.markerRequestId } : {}),
     }];
   }).slice(-200);
 }
@@ -1266,8 +1284,11 @@ function buildForwardPrompt(request, msg, attachments, { promptInstructions = []
   if (rejectedCount > 0) {
     sections.push(`Attachment note: ${rejectedCount} attachment(s) could not be passed to Desktop. Do not claim to have read them.`);
   }
+  if (request.desktopThreadId) sections.push(
+    `For a genuinely long task, publish a short progress update at meaningful stages in public commentary, using only these exact request-specific progress markers on their own unquoted lines. Say what action you are taking, what is verified complete, or the next step in 1-3 sentences. Do not include private reasoning, reasoning summaries, raw tool output, credentials, or unrelated Desktop work. These markers update the original card and never complete the request. Do not put a progress update inside feishu-reply markers or a code block. Example:\n<!-- feishu-progress:${request.requestId}:start -->\n已完成资料核对，正在整理结果；下一步检查交付文件。\n<!-- feishu-progress:${request.requestId}:end -->`,
+  );
   sections.push(
-    `When you provide the complete answer to this Feishu request, include it between these exact markers in your final answer; use public commentary only when the request asks for a quick receipt or steering confirmation, not for ordinary progress updates. Keep the answer concise and self-contained.\n<!-- feishu-reply:${request.requestId}:start -->\n...\n<!-- feishu-reply:${request.requestId}:end -->`,
+    `When you provide the complete answer to this Feishu request, include it between these exact markers in your final answer; ${request.desktopThreadId ? "use the separate feishu-progress markers above for ordinary public progress updates." : "use public commentary only when the request asks for a quick receipt or steering confirmation, not for ordinary progress updates."} Keep the answer concise and self-contained.\n<!-- feishu-reply:${request.requestId}:start -->\n...\n<!-- feishu-reply:${request.requestId}:end -->`,
   );
   return sections.join("\n\n");
 }
@@ -1359,6 +1380,83 @@ function findMarkedAnswer(request, turns) {
   return candidates[0] ?? null;
 }
 
+function findMarkedProgress(request, turns) {
+  if (!request.desktopThreadId || !THREAD_ID_RE.test(request.requestId)) return null;
+  const baselineIds = new Set(request.baselineTurnIds ?? []);
+  const activeIds = new Set(request.baselineActiveTurnIds ?? []);
+  const baselineItems = new Map((request.baselinePublicItems ?? []).map((item) => [item.itemId, item]));
+  const progressItems = new Map((request.progressPublicItems ?? [])
+    .filter((item) => item.markerRequestId === request.requestId).map((item) => [item.itemId, item]));
+  const candidates = [];
+  for (const [turnIndex, turn] of turns.entries()) {
+    if (typeof turn?.id !== "string" || !Array.isArray(turn.items)) continue;
+    // A request may steer an already active turn. Its pre-send item baseline
+    // excludes earlier text; later turns must start after the submission baseline.
+    if (!activeIds.has(turn.id) && (baselineIds.has(turn.id) ||
+        !isAfterAcceptance(turn.startedAt, request.baselineAt ?? request.acceptedAt, 0))) continue;
+    for (const [itemIndex, item] of turn.items.entries()) {
+      if (item?.type !== "agentMessage" || item.phase !== "commentary" || typeof item.text !== "string") continue;
+      const itemId = nonEmptyString(item.id) ?? `${turn.id}:${itemIndex}`;
+      const progress = extractMarkedProgress(item.text, request.requestId);
+      if (!progress || progress.endOffset <= Math.max(baselineItems.get(itemId)?.length ?? 0, progressItems.get(itemId)?.length ?? 0)) continue;
+      candidates.push({ turnIndex, itemIndex, text: progress.text,
+        metadata: { itemId, turnId: turn.id, phase: "commentary", length: progress.endOffset, markerRequestId: request.requestId } });
+    }
+  }
+  candidates.sort((a, b) => a.turnIndex - b.turnIndex || b.itemIndex - a.itemIndex);
+  return candidates.length ? { ...candidates[0], observedMetadata: candidates.map((candidate) => candidate.metadata) } : null;
+}
+
+function extractMarkedProgress(text, requestId) {
+  // HTML quote/code containers are reference text too; fail closed for the item.
+  if (/<(?:pre|code|blockquote)\b/i.test(text)) return null;
+  let fence = null;
+  let block = null;
+  let offset = 0;
+  let result = null;
+  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+    offset += line.length;
+    const trimmed = line.trim();
+    const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (fenceMatch) {
+      const delimiter = fenceMatch[1];
+      if (!fence) fence = delimiter;
+      else if (delimiter[0] === fence[0] && delimiter.length >= fence.length && /^ {0,3}(?:`+|~+)\s*$/.test(line)) fence = null;
+      if (block) block.invalid = true;
+      continue;
+    }
+    if (fence) continue;
+    // Quoted markers and indented code cannot open a protocol block. A block
+    // containing either is invalid, as are nested or crossed bridge markers.
+    if (/^(?: {4}|\t| {0,3}>)/.test(line)) {
+      if (block) block.invalid = true;
+      continue;
+    }
+    const marker = trimmed.match(/^<!-- feishu-(progress|reply):([0-9a-f-]+):(start|end) -->$/i);
+    if (marker) {
+      if (marker[3] === "start") {
+        if (block) { block.depth++; block.invalid = true; }
+        else block = { depth: 1, kind: marker[1], requestId: marker[2], invalid: false, lines: [] };
+      } else if (block) {
+        if (block.depth > 1) { block.depth--; block.invalid = true; continue; }
+        const body = block.lines.join("").trim();
+        if (!block.invalid && block.kind === "progress" && block.requestId === requestId &&
+            marker[1] === "progress" && marker[2] === requestId && body && body.length <= 2_000) {
+          result = { text: body, endOffset: offset };
+        }
+        block = null;
+      }
+      continue;
+    }
+    if (/<!--\s*feishu-(?:reply|progress):/.test(line)) {
+      if (block) block.invalid = true;
+      continue;
+    }
+    if (block) block.lines.push(line);
+  }
+  return result;
+}
+
 function findPublicProgress(request, turns) {
   if (!request.allowUnmarkedProgress) return null;
   const baselineItems = new Map((request.baselinePublicItems ?? []).map((item) => [item.itemId, item]));
@@ -1388,13 +1486,13 @@ function findPublicProgress(request, turns) {
   return candidates[0] ?? null;
 }
 
-function isAfterAcceptance(value, acceptedAt) {
+function isAfterAcceptance(value, acceptedAt, toleranceMs = 60_000) {
   if (acceptedAt == null) return false;
   let time;
   if (typeof value === "number" && Number.isFinite(value)) time = value < 1e12 ? value * 1_000 : value;
   else if (typeof value === "string") time = Date.parse(value);
   else return false;
-  return Number.isFinite(time) && time >= acceptedAt - 60_000;
+  return Number.isFinite(time) && time >= acceptedAt - toleranceMs;
 }
 
 function extractMarkedUpdate(text, requestId) {
