@@ -4,6 +4,11 @@ const MESSAGE_ID = /^om_[A-Za-z0-9_-]+$/;
 const preparedEnvelopes = new WeakSet();
 const MAX_REFERENCE_MESSAGES = 12;
 const MAX_REFERENCE_CHARS = 8_000;
+const SHORT_CONFIRMATION = /^(?:是|好|好的|继续|可以|行|对|对的|同意|确认|yes|ok|continue)[。！!\s]*$/i;
+
+function withoutMentions(content) {
+  return content.replace(/<at\b[^>]*>[\s\S]*?<\/at>|@_user_\d+/g, " ").trim();
+}
 
 function timestamp(value) {
   const number = Number(value);
@@ -66,10 +71,15 @@ export function isPreparedGroupTaskEnvelope(envelope, msg, groupId) {
 
 export function correlateGroupTask(envelope, knownRequests = []) {
   const anchors = new Set(envelope.verifiedReferenceMessageIds);
-  const matches = [...knownRequests].filter((request) => request.chatId === envelope.groupId && request.appId === envelope.appId &&
+  const requests = [...knownRequests].filter((request) => request.chatId === envelope.groupId && request.appId === envelope.appId &&
     request.senderType === "user" && request.mentionedBot === true &&
-    !["identity_review_required", "source_withdrawn", "cancelled_before_send"].includes(request.status) &&
-    [request.messageId, request.presentationMessageId, request.replyMessageId].some((id) => anchors.has(id)));
+    !["identity_review_required", "source_withdrawn", "cancelled_before_send"].includes(request.status));
+  const matching = (id) => anchors.has(id) ? requests.filter((request) =>
+    [request.messageId, request.presentationMessageId, request.replyMessageId].includes(id)) : [];
+  const parentMatches = matching(envelope.parentMessageId);
+  // A verified direct reply identifies the task more precisely than its older root.
+  // A complete same-actor human parent can instead supply this new request's scope.
+  const matches = parentMatches.length ? parentMatches : envelope.quotedInstructionMessageId ? [] : matching(envelope.rootMessageId);
   const unique = [...new Map(matches.map((request) => [request.requestId, request])).values()];
   // Referencing another person's request supplies material, never their authority.
   const followup = unique.length === 1 && unique[0].senderId === envelope.actorOpenId ? unique[0] : null;
@@ -111,9 +121,18 @@ export async function prepareGroupRequestContext({ msg, context, channel, groupI
       // Only an explicitly quoted, owned final/pause card supplies bot text.
       // Ambient bot echoes and all progress-card bodies remain excluded.
       if (!resultCardText && (senderType !== "user" || /<!--\s*feishu-(?:progress|reply):/.test(content))) continue;
+      const projectedContent = resultCardText || referenceText(content);
+      const parentText = withoutMentions(content);
+      // Only a complete, unchanged text projection may supplement current scope.
+      // Truncated/redacted material could omit a cancellation or a narrower limit.
+      const quotedInstruction = id === parentMessageId && raw.msg_type === "text" &&
+        raw.sender?.sender_type === "user" && raw.sender?.id_type === "open_id" && raw.sender?.id === msg.senderId &&
+        content.length <= 4_000 && projectedContent === content && parentText.length > 0 &&
+        !SHORT_CONFIRMATION.test(parentText) && !/<!--|__bridge_cb|__claude_cb/.test(content);
       messages.push({ messageId: id, senderId: referenceText(raw.sender?.id ?? raw.sender_id ?? ""),
         senderType: resultCardText ? "app" : "user", timestamp: new Date(timestamp(raw.create_time ?? raw.createTime)).toISOString(),
-        msgType: referenceText(raw.msg_type ?? "unknown"), content: resultCardText || referenceText(content), referenceOnly: true });
+        msgType: referenceText(raw.msg_type ?? "unknown"), content: projectedContent, referenceOnly: !quotedInstruction,
+        ...(quotedInstruction ? { contextRole: "quoted_instruction" } : {}) });
     } catch { /* Unavailable or withdrawn references confer no context or attachment access. */ }
   }
   // History is material only when this message explicitly requests a group recap.
@@ -138,11 +157,14 @@ export async function prepareGroupRequestContext({ msg, context, channel, groupI
       context.syncStatus?.incrementalStatus === "partial" || Boolean(context.syncStatus?.lastErrorCategory) },
     messages: messages.slice(0, MAX_REFERENCE_MESSAGES) };
   while (JSON.stringify(referenceContext).length > MAX_REFERENCE_CHARS && referenceContext.messages.length) referenceContext.messages.pop();
-  const content = typeof msg.content === "string" ? msg.content.trim() : "";
-  const needsClarification = /^(?:是|好|好的|继续|可以|行|对|同意|确认|yes|ok|continue)[。！!\s]*$/i.test(content) ||
-    verified.length === 0 && /(?:里面|这个|那个|上述|刚才那个)/.test(content);
+  const quotedInstruction = referenceContext.messages.find((record) => record.contextRole === "quoted_instruction");
+  const content = typeof msg.content === "string" ? withoutMentions(msg.content) : "";
+  const needsClarification = SHORT_CONFIRMATION.test(content) && !quotedInstruction &&
+    !(Array.isArray(msg.resources) && msg.resources.length);
   const taskEnvelope = Object.freeze({ version: 1, groupId, appId, sourceMessageId: msg.messageId,
     actorOpenId: msg.senderId, ownerOpenId, parentMessageId, rootMessageId, sourceCreateTime: sourceTime,
+    quotedInstructionMessageId: quotedInstruction?.messageId ?? null,
+    quotedInstructionActorOpenId: quotedInstruction?.senderId ?? null,
     verifiedReferenceMessageIds: Object.freeze(verified), needsClarification });
   preparedEnvelopes.add(taskEnvelope);
   return { referenceContext, allowedAttachmentMessageIds: Object.freeze([msg.messageId, ...verified]), taskEnvelope };
