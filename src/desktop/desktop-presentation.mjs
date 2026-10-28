@@ -444,7 +444,8 @@ export class DesktopPresentation {
 function buildProgressCard(content, completed = false, paused = false, successTheme = completed) {
   const theme = completed && !paused && successTheme ? "green" : "blue";
   const visibleContent = normalizeProgressContent(content);
-  const title = paused ? "任务已暂停" : completed ? "任务回复" : "桌面任务进度";
+  const notice = completed && !paused && !successTheme;
+  const title = paused ? "任务已暂停" : notice ? "连接提示" : completed ? "任务回复" : "桌面任务进度";
   return {
     schema: "2.0",
     config: { update_multi: true, width_mode: "default" },
@@ -452,7 +453,7 @@ function buildProgressCard(content, completed = false, paused = false, successTh
       title: { tag: "plain_text", content: title },
       subtitle: {
         tag: "plain_text",
-        content: paused ? "恢复后继续同步" : completed ? "桌面任务已完成" : "结果会更新在此卡片中",
+        content: paused ? "恢复后继续同步" : notice ? "请查看处理状态" : completed ? "桌面任务已完成" : "结果会更新在此卡片中",
       },
       template: theme,
       icon: { tag: "standard_icon", token: "ai-common_colorful" },
@@ -476,7 +477,7 @@ function buildProgressCard(content, completed = false, paused = false, successTh
               elements: [
                 {
                   tag: "markdown",
-                  content: `**${paused ? "暂停时进度" : completed ? "回复内容" : "当前进度"}**\n\n${visibleContent}`,
+                  content: `**${paused ? "暂停时进度" : notice ? "状态说明" : completed ? "回复内容" : "当前进度"}**\n\n${visibleContent}`,
                 },
               ],
             },
@@ -484,7 +485,7 @@ function buildProgressCard(content, completed = false, paused = false, successTh
         },
         {
           tag: "markdown",
-          content: paused ? "任务已暂停，恢复后会继续处理。" : completed ? "任务已完成。" : "进度会在本卡片中持续更新。",
+          content: paused ? "任务已暂停，恢复后会继续处理。" : notice ? "这条连接提示不代表任务已完成。" : completed ? "任务已完成。" : "进度会在本卡片中持续更新。",
           text_size: "notation",
         },
       ],
@@ -519,7 +520,7 @@ function isOwnedProgressCard(response, messageId, presentation) {
   try {
     const card = JSON.parse(message.body?.content ?? "null");
     return card?.schema === "2.0" && card?.config?.streaming_mode !== true &&
-      ["桌面任务进度", "任务回复", "任务已暂停"].includes(card?.header?.title?.content);
+      ["桌面任务进度", "任务回复", "任务已暂停", "连接提示"].includes(card?.header?.title?.content);
   } catch {
     return false;
   }
