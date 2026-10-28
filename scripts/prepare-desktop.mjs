@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync 
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertPrivateStorage, PROJECT_ROOT, desktopRoot, upstreamRoot } from '../src/settings.mjs';
+import { applyGroupIntakeRecoveryPatch } from './patch-group-intake-recovery.mjs';
 
 export const UPSTREAM_PACKAGE_VERSION = '0.7.1';
 export const UPSTREAM_CLI_SHA256 = 'e9cdeed0c5e09c8e5155d00d11240152ef37b261daf88cbc56e4a02e244c5601';
@@ -29,7 +30,7 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return applyGroupRequestContextPatch(applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched))));
+  return applyGroupIntakeRecoveryPatch(applyGroupRequestContextPatch(applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched)))));
 }
 
 // Keep the pinned PATCH unchanged; group request isolation is an exact post-patch.
