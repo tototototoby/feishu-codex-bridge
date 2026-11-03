@@ -321,6 +321,24 @@ real mention routing, topic behavior, final delivery or attachment readback.
 Those require separately authorized live validation with the intended bot,
 group and native chat.
 
+### Updating rich-text replies
+
+A group Desktop control can opt new requests into `presentationMode:
+"streaming-post"`. Each new request creates one rich-text reply in the source
+message's topic, updates that same message as public progress arrives, and
+replaces its content with the final answer. The final message remains ordinary
+rich text, without a task-card header or a second final-answer message.
+Updates follow the monitor's roughly five-second interval; this is not a
+token-by-token stream. Existing completion mentions stay enabled and, for
+this mode, are sent inside the same topic.
+
+The request stores its presentation mode and message receipt. Existing card
+requests retain their original presentation after a configuration change.
+An uncertain initial create is never repeated. Resume verifies the saved
+message's sender, group, source and post type before updating it; safe retries
+replace only that same message. Topic rejection does not fall back to a group
+timeline message. Generated images and files retain the existing media outbox.
+
 ### Oversized native turns
 
 An image-heavy native turn can exceed the official `read_thread` size limit

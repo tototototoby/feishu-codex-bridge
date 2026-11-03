@@ -60,10 +60,14 @@ function noticeResultLink(channel, chatId, resultMessage) {
     (Number.isSafeInteger(Number(position)) && Number(position) > 0 && /^(?:[1-9][0-9]*)$/.test(String(position)) ? `&position=${position}` : "");
 }
 
+function noticeBody(request) {
+  return request?.presentationMode === "streaming-post" ? "本次处理已有结果，请查看回复。" : NOTICE_BODY;
+}
+
 function noticeText(request, resultLink) {
   const recipient = request?.completionNoticeMode === "mention_requester"
     ? `<at user_id="${request.completionNoticeRecipientOpenId}"></at> ` : "";
-  return `${recipient}🔔 ${NOTICE_BODY}\n打开聊天查看结果：${resultLink}`;
+  return `${recipient}🔔 ${noticeBody(request)}\n打开聊天查看结果：${resultLink}`;
 }
 
 /**
@@ -77,7 +81,8 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
 
   let createMessage;
   try {
-    createMessage = channel?.rawClient?.im?.v1?.message?.create;
+    createMessage = request.presentationMode === "streaming-post"
+      ? channel?.rawClient?.im?.v1?.message?.reply : channel?.rawClient?.im?.v1?.message?.create;
   } catch {
     return { kind: "pre-send", code: "completion-notice-client-unavailable" };
   }
@@ -130,15 +135,14 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
   const text = noticeText(request, resultLink);
   let response;
   try {
-    response = await channel.rawClient.im.v1.message.create({
-      params: { receive_id_type: "chat_id" },
-      data: {
-        receive_id: chatId,
-        msg_type: "text",
-        content: JSON.stringify({ text }),
-        uuid,
-      },
-    });
+    const data = { msg_type: "text", content: JSON.stringify({ text }), uuid };
+    response = request.presentationMode === "streaming-post"
+      ? await channel.rawClient.im.v1.message.reply({
+          path: { message_id: request.messageId }, data: { ...data, reply_in_thread: true },
+        })
+      : await channel.rawClient.im.v1.message.create({
+          params: { receive_id_type: "chat_id" }, data: { receive_id: chatId, ...data },
+        });
   } catch {
     request.completionNoticeState = "uncertain";
     request.completionNoticeError = "send-uncertain";
@@ -169,7 +173,9 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
       const readbackText = JSON.parse(notice?.body?.content ?? "null")?.text;
       request.completionNoticeReadbackStatus = isOwnedMessage(notice, request, messageId) && notice.msg_type === "text" &&
         Array.isArray(mentions) && mentions.length === 1 && mentionId(mentions[0]) === request.completionNoticeRecipientOpenId &&
-        typeof readbackText === "string" && readbackText.includes(NOTICE_BODY) && readbackText.includes(resultLink) ? "verified" : "failed";
+        typeof readbackText === "string" && readbackText.includes(noticeBody(request)) && readbackText.includes(resultLink) &&
+        (request.presentationMode !== "streaming-post" || notice.parent_id === request.messageId &&
+          typeof resultMessage?.thread_id === "string" && notice.thread_id === resultMessage.thread_id) ? "verified" : "failed";
     } catch {
       request.completionNoticeReadbackStatus = "failed";
     }

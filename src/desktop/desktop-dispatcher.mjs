@@ -6,6 +6,7 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { AppToolsMcpClient } from "./app-tools-client.mjs";
 import { DesktopPresentation } from "./desktop-presentation.mjs";
+import { DesktopPostPresentation } from "./desktop-post-presentation.mjs";
 import { sendCompletionNoticeOnce } from "./completion-notifier.mjs";
 import { discoverAppToolsEndpoint } from "./app-tools-endpoint.mjs";
 import { isVerifiedGroupControl } from "./group-policy.mjs";
@@ -187,7 +188,7 @@ export class DesktopDispatcher {
 
   async ensurePresentation(request, channel, { resumed = false } = {}) {
     if (request.presentation || this.closed || !channel) return request.presentation;
-    if (resumed && request.threadReplyPolicyVersion === 1 && request.presentationState && !request.presentationMessageId) {
+    if (resumed && (request.threadReplyPolicyVersion === 1 || request.presentationMode === "streaming-post") && request.presentationState && !request.presentationMessageId) {
       // A create intent without a receipt is uncertain after a process exit.
       // Recovery may monitor it, but cannot safely create a second card.
       this.reportError("presentation-resume", "thread-card-receipt-missing", request.requestId);
@@ -200,7 +201,11 @@ export class DesktopDispatcher {
       await this.persist().catch(() => {});
       return null;
     }
-    const presentation = new DesktopPresentation({
+    if (request.presentationMode === "streaming-post" && (!this.requestScopedGroup || !request.replyInThread)) {
+      throw new RelayError("post-presentation-binding-mismatch");
+    }
+    const Presentation = request.presentationMode === "streaming-post" ? DesktopPostPresentation : DesktopPresentation;
+    const presentation = new Presentation({
       channel,
       chatId: this.scope,
       sourceMessageId: request.messageId,
@@ -315,6 +320,7 @@ export class DesktopDispatcher {
         notifyCompletion: !this.supplementalGroup && !groupScope && (this.scope === configuredDesktopChatId() || Boolean(this.officeBinding)) && raw?.notifyCompletion === true,
         completionNoticeMode: Boolean(this.groupControl || this.supplementalGroup) && raw?.completionNoticeMode === "mention_requester" ? "mention_requester" : null,
         taskReplyMode: raw?.taskReplyMode === "long_tasks_in_thread" ? "long_tasks_in_thread" : "inline",
+        presentationMode: this.requestScopedGroup && raw?.presentationMode === "streaming-post" ? "streaming-post" : "card",
       };
       if (this.control.threadId !== expectedThreadId || !this.control.nodePath) {
         this.controlError = "invalid-control";
@@ -375,7 +381,7 @@ export class DesktopDispatcher {
           request.progressPublicItems = request.progressPublicItems.filter((item) => item.markerRequestId === request.requestId);
           request.lastAnswerSnapshot = null;
         }
-        if (request.status === "reply_sending") request.status = request.finalAnswer && request.presentationMessageId && request.deliveryMode === "normal-card-patch"
+        if (request.status === "reply_sending") request.status = request.finalAnswer && request.presentationMessageId && isReplaceDelivery(request.deliveryMode)
           ? "reply_retry_pending" : "reply_uncertain";
         if (request.status === "notice_sending") request.status = "notice_uncertain";
         if (request.completionNoticeState === "sending") request.completionNoticeState = "uncertain";
@@ -464,7 +470,8 @@ export class DesktopDispatcher {
       }
     }
 
-    const replyInThread = taskScopeReplyOptions(msg, this.groupBinding?.control ?? this.groupControl ?? this.control).replyInThread === true;
+    const streamingPost = this.requestScopedGroup && this.control?.presentationMode === "streaming-post";
+    const replyInThread = streamingPost || taskScopeReplyOptions(msg, this.groupBinding?.control ?? this.groupControl ?? this.control).replyInThread === true;
     const groupNotice = this.control?.completionNoticeMode === "mention_requester" &&
       this.isGroupCompletionBinding(msg, channel, appId, botOwnerId);
     const request = {
@@ -482,6 +489,7 @@ export class DesktopDispatcher {
       ...(this.groupControl ? { sourceCreateTime: Number.isSafeInteger(msg.createTime) ? msg.createTime : null,
         senderType: msg.senderType, mentionedBot: msg.mentionedBot === true } : {}),
       replyInThread,
+      ...(streamingPost ? { presentationMode: "streaming-post", threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
       ...(!this.groupControl && !this.supplementalGroup && replyInThread ? { threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
       completionNoticeEligible: groupNotice || this.control?.notifyCompletion === true && !replyInThread,
       ...(groupNotice ? { completionNoticeMode: "mention_requester", completionNoticePolicyVersion: 1,
@@ -908,21 +916,33 @@ export class DesktopDispatcher {
   async deliverReply(request, answer) {
     if (this.closed) return;
     request.finalAnswer = answer;
-    if (request.presentationMessageId && request.presentation) request.deliveryMode = "normal-card-patch";
+    if (request.presentationMessageId && request.presentation) request.deliveryMode = request.presentationMode === "streaming-post" ? "normal-post-update" : "normal-card-patch";
     request.status = "reply_sending";
     request.presentationState = "finishing";
     await this.persist();
     if (this.closed) {
-      request.status = request.deliveryMode === "normal-card-patch" && request.finalAnswer
+      request.status = isReplaceDelivery(request.deliveryMode) && request.finalAnswer
         ? "reply_retry_pending" : "accepted";
       await this.persist();
       return;
     }
     const body = formatFeishuReply(request, answer);
-    if (request.threadReplyPolicyVersion === 1) {
+    if (request.threadReplyPolicyVersion === 1 || request.presentationMode === "streaming-post") {
       // Media must observe the persisted route after any inline downgrade.
       await request.presentation?.startPromise;
+      if (request.presentationMode === "streaming-post" && !request.presentation?.messageId &&
+          request.presentationMessageId && request.presentation?.retryable && !request.presentation.writeFailed) {
+        await request.presentation.resumeSingleFlight();
+      }
       if (!request.presentation?.messageId) {
+        if (request.presentationMode === "streaming-post" && request.presentationMessageId && request.presentation?.retryable && !request.presentation.writeFailed) {
+          request.status = "reply_retry_pending";
+          request.presentationState = "retry_pending";
+          request.replyRetryAt = Date.now() + 15_000;
+          request.errorCode = "post-receipt-verification-pending";
+          await this.persist();
+          return;
+        }
         request.status = "reply_uncertain";
         request.presentationState = "uncertain";
         request.errorCode = "thread-card-receipt-missing";
@@ -946,12 +966,12 @@ export class DesktopDispatcher {
     try {
       const presentationResult = await request.presentation?.finish(body);
       let receipt;
-      if (presentationResult?.kind === "retryable" && request.deliveryMode === "normal-card-patch") {
+      if (presentationResult?.kind === "retryable" && isReplaceDelivery(request.deliveryMode)) {
         request.status = "reply_retry_pending";
         request.presentationState = "retry_pending";
         request.replyAttempts = (request.replyAttempts ?? 0) + 1;
         request.replyRetryAt = Date.now() + Math.min(300_000, 10_000 * 2 ** Math.min(request.replyAttempts - 1, 5));
-        request.errorCode = "card-delivery-retry-pending";
+        request.errorCode = request.presentationMode === "streaming-post" ? "post-delivery-retry-pending" : "card-delivery-retry-pending";
         this.reportError("lark-reply", request.errorCode, request.requestId);
         await this.persist();
         return;
@@ -1115,7 +1135,7 @@ export class DesktopDispatcher {
   async sendLark(request, content, channelOverride) {
     const channel = channelOverride ?? request.channel ?? this.channel;
     if (!channel) throw new RelayError("channel-unavailable");
-    if (request.threadReplyPolicyVersion === 1 && !request.presentationMessageId) {
+    if ((request.threadReplyPolicyVersion === 1 || request.presentationMode === "streaming-post") && !request.presentationMessageId) {
       throw new RelayError("thread-card-receipt-missing");
     }
     const options = {
@@ -1241,6 +1261,7 @@ function normalizeRequest(input) {
     trustedMemberApprovedAt: nonEmptyString(input.trustedMemberApprovedAt),
     trustedMemberEffectiveFrom: nonEmptyString(input.trustedMemberEffectiveFrom),
     replyInThread: input.replyInThread === true,
+    presentationMode: input.presentationMode === "streaming-post" ? "streaming-post" : "card",
     ...(input.threadReplyPolicyVersion === 1 ? {
       threadReplyPolicyVersion: 1,
       threadFallbackCode: [230071, 230072].includes(input.threadFallbackCode) ? input.threadFallbackCode : null,
@@ -1276,7 +1297,7 @@ function normalizeRequest(input) {
     unsupportedAttachments: Number.isInteger(input.unsupportedAttachments) ? input.unsupportedAttachments : 0,
     errorCode: nonEmptyString(input.errorCode),
     finalAnswer: typeof input.finalAnswer === "string" ? input.finalAnswer : null,
-    deliveryMode: input.deliveryMode === "normal-card-patch" ? input.deliveryMode : null,
+    deliveryMode: isReplaceDelivery(input.deliveryMode) ? input.deliveryMode : null,
     finalMediaStarted: input.finalMediaStarted === true,
     finalMediaHandled: input.finalMediaHandled === true,
     replyAttempts: Number.isInteger(input.replyAttempts) ? input.replyAttempts : 0,
@@ -1301,6 +1322,7 @@ function serializableRequest(request) {
       sourceCreateTime: request.sourceCreateTime, senderType: request.senderType, mentionedBot: request.mentionedBot,
     } : {}),
     replyInThread: request.replyInThread,
+    ...(request.presentationMode === "streaming-post" ? { presentationMode: "streaming-post" } : {}),
     ...(request.threadReplyPolicyVersion === 1 ? {
       threadReplyPolicyVersion: 1, threadFallbackCode: request.threadFallbackCode ?? null,
     } : {}),
@@ -1400,6 +1422,9 @@ function buildForwardPrompt(request, msg, attachments, { promptInstructions = []
   if (rejectedCount > 0) {
     sections.push(`Attachment note: ${rejectedCount} attachment(s) could not be passed to Desktop. Do not claim to have read them.`);
   }
+  if (request.presentationMode === "streaming-post") sections.push(
+    "The bridge presents this request as one continuously updated rich-text reply inside the source message topic. Public progress markers update that same message, and the completed reply replaces its content with the final body. Keep meaningful progress brief and factual. Do not manually send an extra progress message or final answer through Feishu tools; use this request's exact markers so the bridge remains the sole sender.",
+  );
   if (request.groupPolicyVersion === 1) sections.push(
     `For a genuinely long task, publish a short progress update at meaningful stages in public commentary, using only these exact request-specific progress markers on their own unquoted lines. Say what action you are taking, what is verified complete, or the next step in 1-3 sentences. Do not include private reasoning, reasoning summaries, raw tool output, credentials, or unrelated Desktop work. These markers update the original card and never complete the request. Do not put a progress update inside feishu-reply markers or a code block. Example:\n<!-- feishu-progress:${request.requestId}:start -->\n已完成资料核对，正在整理结果；下一步检查交付文件。\n<!-- feishu-progress:${request.requestId}:end -->`,
   );
@@ -1662,6 +1687,9 @@ function assertToolSuccess(result, tool) {
 }
 
 function progressCardBody(request, snapshot, { markerOnly = false } = {}) {
+  if (request.presentationMode === "streaming-post") {
+    return request.progressText || (snapshot ? "正在处理…" : "正在重新连接，已接收的请求会保留。");
+  }
   const stamp = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
   const turn = markerOnly ? null : snapshot?.turns?.find((item) => item.status === "inProgress");
   let activity = snapshot ? (turn ? "正在处理" : "桌面连接正常，等待对应答复") : "正在重新连接桌面，已接收的请求保留中";
@@ -1671,6 +1699,10 @@ function progressCardBody(request, snapshot, { markerOnly = false } = {}) {
     activity = /image.*generat/.test(tag) ? "正在生成图片" : /browser|cua|computer/.test(tag) ? "正在操作浏览器" : /collab|agent/.test(tag) ? "正在处理子任务" : "正在执行处理步骤";
   }
   return [request.progressText ? `桌面当前进展：\n\n${request.progressText}` : "已接收你的请求…", `_${activity} · ${snapshot ? "最新同步" : "连接检查"} ${stamp}_`].join("\n\n");
+}
+
+function isReplaceDelivery(mode) {
+  return mode === "normal-card-patch" || mode === "normal-post-update";
 }
 
 function failureNotice(code) {

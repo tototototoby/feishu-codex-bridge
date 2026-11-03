@@ -43,6 +43,7 @@
     "src/desktop/desktop-codex-binary.mjs",
     "src/desktop/desktop-dispatcher.mjs",
     "src/desktop/desktop-presentation.mjs",
+    "src/desktop/desktop-post-presentation.mjs",
     "src/desktop/group-attachments.mjs",
     "src/desktop/group-image-size.mjs",
     "src/desktop/group-intake-recovery.mjs",
