@@ -320,3 +320,24 @@ or successful preparation does not establish native endpoint availability,
 real mention routing, topic behavior, final delivery or attachment readback.
 Those require separately authorized live validation with the intended bot,
 group and native chat.
+
+### Oversized native turns
+
+An image-heavy native turn can exceed the official `read_thread` size limit
+even with one turn per page. After that explicit size error, group dispatchers
+can read exact pending-request reply/progress envelopes from the bound local
+Desktop rollout. The normal API remains the primary source and the existing
+monitor, card transport and media outbox remain the only delivery path.
+
+The compatibility reader verifies the session ID and regular local path,
+rejects symbolic links and ambiguous files, and accepts only public assistant
+messages with complete request-specific markers. It never returns reasoning,
+tool output, user messages or text outside those envelopes. Reads are bounded,
+streamed and cached by file identity and offset. It does not edit sessions or
+recover terminal/uncertain requests. If the local format changes, the file is
+unavailable or its scan budget is exceeded, delivery remains unconfirmed.
+
+For multiple complete envelopes belonging to the same request, the latest
+public message in the newest turn takes precedence. This lets a correction replace
+an earlier result before delivery, including a truthful acknowledgement that
+the user already delivered an artifact manually.

@@ -1,4 +1,5 @@
 import { taskScopeReplyOptions } from "./task-reply-policy.mjs";
+import { readRolloutMarkers } from "./rollout-markers.mjs";
 import { randomUUID } from "node:crypto";
 import { correlateGroupTask, isPreparedGroupTaskEnvelope } from "./group-request-policy.mjs";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
@@ -132,6 +133,8 @@ export class DesktopDispatcher {
     this.stateError = null;
     this.historyCursor = null;
     this.historyScanAt = 0;
+    this.rolloutFallbackNeeded = false;
+    this.rolloutScanAt = 0;
   }
 
   async initialize() {
@@ -687,6 +690,7 @@ export class DesktopDispatcher {
     }
     try {
       const result = await this.getClient().readThread(input, options);
+      if (isOversizedHistoryResult(result)) this.rolloutFallbackNeeded = true;
       assertToolSuccess(result, "read_thread");
       const snapshot = threadSnapshot(result);
       if (snapshot?.thread?.id !== this.control.threadId) throw new RelayError("read-thread-target-mismatch");
@@ -697,6 +701,7 @@ export class DesktopDispatcher {
       }
       if (!["pipe-unavailable", "server-unavailable", "timeout"].includes(classifyError(error)) || !await this.recoverConnection()) throw error;
       const result = await this.getClient().readThread(input, options);
+      if (isOversizedHistoryResult(result)) this.rolloutFallbackNeeded = true;
       assertToolSuccess(result, "read_thread");
       const snapshot = threadSnapshot(result);
       if (snapshot?.thread?.id !== this.control.threadId) throw new RelayError("read-thread-target-mismatch");
@@ -809,6 +814,30 @@ export class DesktopDispatcher {
       }
       if (this.closed) return;
       const requestsWithAnswer = new Set();
+      // A confirmed official size-limit failure enables this read-only path.
+      // The normal monitor remains the sole delivery owner.
+      if (this.requestScopedGroup && this.rolloutFallbackNeeded && !this.controlError && !this.stateError &&
+          Date.now() >= this.rolloutScanAt && readingRequests.some((request) => !findMarkedAnswer(request, snapshot?.turns ?? [])?.complete)) {
+        this.rolloutScanAt = Date.now() + 15_000;
+        const threadId = this.control.threadId;
+        try {
+          const local = await readRolloutMarkers({ threadId,
+            requests: readingRequests.filter((request) => !findMarkedAnswer(request, snapshot?.turns ?? [])?.complete) });
+          if (this.closed) return;
+          if (local?.thread?.id === threadId && this.control.threadId === threadId && !this.controlError && !this.stateError) {
+            const merged = new Map((snapshot?.turns ?? []).map((turn) => [turn.id, turn]));
+            for (const turn of local.turns) {
+              const existing = merged.get(turn.id);
+              merged.set(turn.id, existing ? { ...turn, ...existing,
+                items: [...(existing.items ?? []), ...turn.items.filter((item) => !(existing.items ?? []).some((other) => other.id === item.id))] } : turn);
+            }
+            snapshot = { ...(snapshot ?? {}), thread: local.thread,
+              turns: [...merged.values()].sort((a, b) => Number(b.startedAt) - Number(a.startedAt)) };
+          }
+        } catch (error) {
+          this.reportError("rollout-markers", typeof error?.code === "string" ? error.code : "marker-read-failed");
+        }
+      }
       for (const request of pending) {
         if (!["accepted", "delivery_uncertain"].includes(request.status)) continue;
         if (!snapshot) continue;
@@ -1380,6 +1409,11 @@ function buildForwardPrompt(request, msg, attachments, { promptInstructions = []
   return sections.join("\n\n");
 }
 
+function isOversizedHistoryResult(result) {
+  return result?.isError === true && (result.content ?? []).some((block) => block?.type === "text" &&
+    /(?:thread history exceeds the read size limit|single oversized turn cannot be read)/i.test(block.text ?? ""));
+}
+
 function threadSnapshot(result) {
   if (!result || result.isError === true) return null;
   const candidates = [
@@ -1460,7 +1494,6 @@ function findMarkedAnswer(request, turns) {
   }
   candidates.sort((a, b) =>
     Number(b.complete) - Number(a.complete) ||
-    Number(b.phase === "final_answer") - Number(a.phase === "final_answer") ||
     a.turnIndex - b.turnIndex ||
     b.itemIndex - a.itemIndex
   );
