@@ -23,6 +23,7 @@ export class DesktopPostPresentation {
     this.closed = false;
     this.writeFailed = false;
     this.retryable = false;
+    this.lastFailureApiCode = null;
     this.finishIntent = null;
     this.finishTask = null;
     this.updateTask = null;
@@ -183,12 +184,14 @@ export class DesktopPostPresentation {
       } catch (error) { result = error; }
       if (hasApiSuccessCode(result)) {
         this.retryable = false;
+        this.lastFailureApiCode = null;
         return true;
       }
       // The installed SDK classifies these explicit API codes as format
       // errors. Fall back only on a replacement PUT; never create again.
       const { apiCode } = numericFailureDetails(result);
-      if (!plainFallback && [230001, 230002].includes(apiCode) && attempt + 1 < MAX_ATTEMPTS) {
+      this.lastFailureApiCode = apiCode ?? null;
+      if (!plainFallback && apiCode === 230001 && attempt + 1 < MAX_ATTEMPTS) {
         plainFallback = true;
         continue;
       }
@@ -350,9 +353,11 @@ function numericFailureDetails(value) {
   const status = value?.response?.status ?? value?.status;
   const apiCode = value?.response?.data?.code ?? value?.data?.code ?? value?.apiCode ??
     (typeof value?.code === "number" ? value.code : undefined);
+  const extCode = value?.response?.data?.error?.ext_code ?? value?.error?.ext_code ?? value?.extCode;
   return {
     ...(Number.isInteger(status) && status >= 100 && status <= 599 ? { status } : {}),
     ...(Number.isInteger(apiCode) && apiCode >= 0 ? { apiCode } : {}),
+    ...(Number.isInteger(extCode) ? { extCode } : {}),
   };
 }
 

@@ -30,7 +30,17 @@ export function applyPinnedDesktopPatch(upstreamText) {
     constructor.replace('binary: codex.binaryPath,', 'binary: resolveDesktopCodexBinary(codex.binaryPath),'),
     'Pinned Desktop Codex adapter constructor anchor mismatch.'
   );
-  return applyGroupIntakeRecoveryPatch(applyGroupRequestContextPatch(applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched)))));
+  return applyNumericDiagnosticsPatch(applyGroupIntakeRecoveryPatch(applyGroupRequestContextPatch(applySupplementalGroupsPatch(applyTaskReplyPatch(applyMemberImagesPatch(patched))))));
+}
+
+function applyNumericDiagnosticsPatch(source) {
+  for (const scope of ['desktop-relay', 'group-desktop']) {
+    source = replaceExactOnce(source,
+      `onError: ({ phase, code, requestId }) => log.warn("${scope}", phase, { code, requestId })`,
+      `onError: ({ phase, code, requestId, status, apiCode, extCode }) => log.warn("${scope}", phase, { code, requestId, status, apiCode, extCode })`,
+      `Numeric diagnostics patch anchor mismatch: ${scope}`);
+  }
+  return source;
 }
 
 // Keep the pinned PATCH unchanged; group request isolation is an exact post-patch.

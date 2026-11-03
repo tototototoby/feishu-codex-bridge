@@ -1,4 +1,6 @@
 const OPEN_ID_RE = /^ou_[A-Za-z0-9_-]{8,128}$/;
+import { BODY_REPLY_ELEMENT_ID } from "./desktop-presentation.mjs";
+const isBodyReply = request => ["streaming-post", "streaming-body"].includes(request?.presentationMode);
 const MESSAGE_ID_RE = /^om_[A-Za-z0-9_-]+$/;
 const NOTICE_BODY = "本次处理已有结果，请查看任务卡片。";
 
@@ -48,7 +50,11 @@ async function verifyGroupNotice(request, channel, chatId) {
     if (card?.schema !== "2.0") throw new Error("completion-notice-result-incomplete");
     const title = card.header?.title?.content;
     if (card.config?.streaming_mode === true || title === "桌面任务进度") throw new Error("completion-notice-result-not-ready");
-    if (!["任务回复", "任务已暂停"].includes(title)) throw new Error("completion-notice-result-incomplete");
+    if (request.presentationMode === "streaming-body") {
+      const elements = card.body?.elements;
+      if (card.header || !Array.isArray(elements) || elements.length !== 1 || elements[0]?.tag !== "markdown" ||
+          elements[0].element_id !== BODY_REPLY_ELEMENT_ID || typeof elements[0].content !== "string" || !elements[0].content.trim()) throw new Error("completion-notice-result-incomplete");
+    } else if (!["任务回复", "任务已暂停"].includes(title)) throw new Error("completion-notice-result-incomplete");
   }
   return reply;
 }
@@ -61,7 +67,7 @@ function noticeResultLink(channel, chatId, resultMessage) {
 }
 
 function noticeBody(request) {
-  return request?.presentationMode === "streaming-post" ? "本次处理已有结果，请查看回复。" : NOTICE_BODY;
+  return isBodyReply(request) ? "本次处理已有结果，请查看回复。" : NOTICE_BODY;
 }
 
 function noticeText(request, resultLink) {
@@ -81,7 +87,7 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
 
   let createMessage;
   try {
-    createMessage = request.presentationMode === "streaming-post"
+    createMessage = isBodyReply(request)
       ? channel?.rawClient?.im?.v1?.message?.reply : channel?.rawClient?.im?.v1?.message?.create;
   } catch {
     return { kind: "pre-send", code: "completion-notice-client-unavailable" };
@@ -136,7 +142,7 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
   let response;
   try {
     const data = { msg_type: "text", content: JSON.stringify({ text }), uuid };
-    response = request.presentationMode === "streaming-post"
+    response = isBodyReply(request)
       ? await channel.rawClient.im.v1.message.reply({
           path: { message_id: request.messageId }, data: { ...data, reply_in_thread: true },
         })
@@ -174,7 +180,7 @@ export async function sendCompletionNoticeOnce({ request, channel, chatId, persi
       request.completionNoticeReadbackStatus = isOwnedMessage(notice, request, messageId) && notice.msg_type === "text" &&
         Array.isArray(mentions) && mentions.length === 1 && mentionId(mentions[0]) === request.completionNoticeRecipientOpenId &&
         typeof readbackText === "string" && readbackText.includes(noticeBody(request)) && readbackText.includes(resultLink) &&
-        (request.presentationMode !== "streaming-post" || notice.parent_id === request.messageId &&
+        (!isBodyReply(request) || notice.parent_id === request.messageId &&
           typeof resultMessage?.thread_id === "string" && notice.thread_id === resultMessage.thread_id) ? "verified" : "failed";
     } catch {
       request.completionNoticeReadbackStatus = "failed";

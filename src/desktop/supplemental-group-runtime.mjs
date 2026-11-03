@@ -151,7 +151,7 @@ export class SupplementalGroupRuntime {
           onFinal: async (request, answer) => {
             if (await mediaReady && !this.closed) return groupMedia.enqueueFromAnswer(request, answer);
           },
-          onError: ({ phase, code, requestId }) => this.log("dispatcher-error", { groupId: binding.groupId, phase, code, requestId }) });
+          onError: ({ phase, code, requestId, status, apiCode, extCode }) => this.log("dispatcher-error", { groupId: binding.groupId, phase, code, requestId, status, apiCode, extCode }) });
         entry = { binding, recorder, groupMedia, dispatcher, ready: false, stopEpoch: 0,
           resolveMediaReady, commandReceipts: new Set() };
         this.groups.set(binding.groupId, entry);

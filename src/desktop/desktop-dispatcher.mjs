@@ -201,11 +201,13 @@ export class DesktopDispatcher {
       await this.persist().catch(() => {});
       return null;
     }
-    if (request.presentationMode === "streaming-post" && (!this.requestScopedGroup || !request.replyInThread)) {
+    if (isStreamingPresentation(request) && (!this.requestScopedGroup || !request.replyInThread)) {
       throw new RelayError("post-presentation-binding-mismatch");
     }
+    if (request.presentationMigration && request.presentationMigration.threadId !== this.control.threadId) throw new RelayError("presentation-migration-thread-mismatch");
     const Presentation = request.presentationMode === "streaming-post" ? DesktopPostPresentation : DesktopPresentation;
     const presentation = new Presentation({
+      bodyOnly: request.presentationMode === "streaming-body",
       channel,
       chatId: this.scope,
       sourceMessageId: request.messageId,
@@ -228,6 +230,12 @@ export class DesktopDispatcher {
       previousMessageId: resumed ? request.presentationMessageId : undefined,
       resumed,
       onMessageId: async (messageId) => {
+        if (request.presentationMigration?.state === "creating") {
+          if (messageId === request.presentationMigration.fromMessageId) throw new RelayError("presentation-migration-reused-old-id");
+          request.presentationMigration.toMessageId = messageId;
+          request.presentationMigration.state = "active";
+          request.presentationMigration.activatedAt = Date.now();
+        }
         request.presentationMessageId = messageId;
         request.presentationState = "open";
         await this.persist();
@@ -236,10 +244,53 @@ export class DesktopDispatcher {
         request.typingReactionId = reactionId;
         await this.persist();
       },
-      onError: ({ phase, code }) => this.reportError(`presentation-${phase}`, code, request.requestId),
+      onError: ({ phase, code, ...details }) => this.reportError(`presentation-${phase}`, code, request.requestId, details),
     });
     request.presentation = presentation;
     return presentation;
+  }
+
+  async migrateExpiredPost(request) {
+    const previous = request.presentation;
+    const apiCode = previous?.lastFailureApiCode;
+    if (!this.requestScopedGroup || request.presentationMode !== "streaming-post" ||
+        !["accepted", "delivery_uncertain", "reply_retry_pending", "reply_sending"].includes(request.status) ||
+        ![230072, 230075].includes(apiCode) || !request.presentationMessageId || request.presentationMigration || this.closed) return false;
+    const original = { presentationMode: request.presentationMode, presentationMessageId: request.presentationMessageId,
+      presentationState: request.presentationState, presentation: previous };
+    request.presentationMigration = { version: 1, requestId: request.requestId, sourceMessageId: request.messageId,
+      groupId: this.scope, threadId: this.control.threadId, fromMode: "streaming-post", toMode: "streaming-body",
+      fromMessageId: request.presentationMessageId, toMessageId: null, state: "creating", apiCode, createdAt: Date.now() };
+    request.presentationMode = "streaming-body";
+    request.presentationMessageId = null;
+    request.presentationState = "starting";
+    request.presentation = null;
+    // Claim exactly one replacement before any new send; a crash with no new
+    // receipt is uncertain and the normal resume guard must never create again.
+    try { await this.persist(); }
+    catch (error) { Object.assign(request, original); request.presentationMigration = null; throw error; }
+    try {
+      await previous.close();
+      if (this.closed) return false;
+      const presentation = await this.ensurePresentation(request, this.channel);
+      await presentation?.startPromise;
+      if (!presentation?.messageId) {
+        request.presentationMigration.state = "uncertain";
+        request.presentationState = "uncertain";
+        request.errorCode = "presentation-migration-receipt-unconfirmed";
+        await this.persist();
+        return false;
+      }
+      await presentation.update(request.progressText || "正在处理…");
+      this.reportError("post-migration", "body-reply-created", request.requestId, { apiCode });
+      return true;
+    } catch {
+      request.presentationMigration.state = request.presentationMessageId ? "active" : "uncertain";
+      request.errorCode = "presentation-migration-unconfirmed";
+      await this.persist().catch(() => {});
+      this.reportError("post-migration", request.errorCode, request.requestId, { apiCode });
+      return false;
+    }
   }
 
   async seedRecoveryProgress(request) {
@@ -320,7 +371,7 @@ export class DesktopDispatcher {
         notifyCompletion: !this.supplementalGroup && !groupScope && (this.scope === configuredDesktopChatId() || Boolean(this.officeBinding)) && raw?.notifyCompletion === true,
         completionNoticeMode: Boolean(this.groupControl || this.supplementalGroup) && raw?.completionNoticeMode === "mention_requester" ? "mention_requester" : null,
         taskReplyMode: raw?.taskReplyMode === "long_tasks_in_thread" ? "long_tasks_in_thread" : "inline",
-        presentationMode: this.requestScopedGroup && raw?.presentationMode === "streaming-post" ? "streaming-post" : "card",
+        presentationMode: this.requestScopedGroup && ["streaming-post", "streaming-body"].includes(raw?.presentationMode) ? raw.presentationMode : "card",
       };
       if (this.control.threadId !== expectedThreadId || !this.control.nodePath) {
         this.controlError = "invalid-control";
@@ -470,7 +521,7 @@ export class DesktopDispatcher {
       }
     }
 
-    const streamingPost = this.requestScopedGroup && this.control?.presentationMode === "streaming-post";
+    const streamingPost = this.requestScopedGroup && isStreamingPresentation(this.control);
     const replyInThread = streamingPost || taskScopeReplyOptions(msg, this.groupBinding?.control ?? this.groupControl ?? this.control).replyInThread === true;
     const groupNotice = this.control?.completionNoticeMode === "mention_requester" &&
       this.isGroupCompletionBinding(msg, channel, appId, botOwnerId);
@@ -489,7 +540,7 @@ export class DesktopDispatcher {
       ...(this.groupControl ? { sourceCreateTime: Number.isSafeInteger(msg.createTime) ? msg.createTime : null,
         senderType: msg.senderType, mentionedBot: msg.mentionedBot === true } : {}),
       replyInThread,
-      ...(streamingPost ? { presentationMode: "streaming-post", threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
+      ...(streamingPost ? { presentationMode: this.control.presentationMode, threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
       ...(!this.groupControl && !this.supplementalGroup && replyInThread ? { threadReplyPolicyVersion: 1, threadFallbackCode: null } : {}),
       completionNoticeEligible: groupNotice || this.control?.notifyCompletion === true && !replyInThread,
       ...(groupNotice ? { completionNoticeMode: "mention_requester", completionNoticePolicyVersion: 1,
@@ -897,6 +948,7 @@ export class DesktopDispatcher {
         statusOwner.lastHeartbeatAt = Date.now();
         // Reuse the existing presentation and its persisted topic/inline route.
         await statusOwner.presentation?.update(progressCardBody(statusOwner, snapshot, { markerOnly: this.requestScopedGroup })).catch(() => {});
+        await this.migrateExpiredPost(statusOwner);
       }
       for (const request of pending) {
         if (!["accepted", "delivery_uncertain"].includes(request.status)) continue;
@@ -930,12 +982,12 @@ export class DesktopDispatcher {
     if (request.threadReplyPolicyVersion === 1 || request.presentationMode === "streaming-post") {
       // Media must observe the persisted route after any inline downgrade.
       await request.presentation?.startPromise;
-      if (request.presentationMode === "streaming-post" && !request.presentation?.messageId &&
-          request.presentationMessageId && request.presentation?.retryable && !request.presentation.writeFailed) {
-        await request.presentation.resumeSingleFlight();
+      if (!request.presentation?.messageId && canRetryPresentationReceipt(request)) {
+        if (request.presentationMode === "streaming-post") await request.presentation.resumeSingleFlight();
+        else if (Date.now() >= (request.presentation.retryAt ?? 0)) await request.presentation.startSingleFlight();
       }
       if (!request.presentation?.messageId) {
-        if (request.presentationMode === "streaming-post" && request.presentationMessageId && request.presentation?.retryable && !request.presentation.writeFailed) {
+        if (canRetryPresentationReceipt(request)) {
           request.status = "reply_retry_pending";
           request.presentationState = "retry_pending";
           request.replyRetryAt = Date.now() + 15_000;
@@ -964,7 +1016,12 @@ export class DesktopDispatcher {
       }
     }
     try {
-      const presentationResult = await request.presentation?.finish(body);
+      let presentationResult = await request.presentation?.finish(body);
+      if (await this.migrateExpiredPost(request)) {
+        request.deliveryMode = "normal-card-patch";
+        await this.persist();
+        presentationResult = await request.presentation?.finish(body);
+      }
       let receipt;
       if (presentationResult?.kind === "retryable" && isReplaceDelivery(request.deliveryMode)) {
         request.status = "reply_retry_pending";
@@ -1188,9 +1245,10 @@ export class DesktopDispatcher {
     }
   }
 
-  reportError(phase, code, requestId) {
+  reportError(phase, code, requestId, details = {}) {
     try {
-      this.onError({ phase, code, requestId });
+      const diagnostics = Object.fromEntries(["status", "apiCode", "extCode"].flatMap((key) => Number.isInteger(details[key]) ? [[key, details[key]]] : []));
+      this.onError({ phase, code, requestId, ...diagnostics });
     } catch {
       // Logging must not interfere with the relay state machine.
     }
@@ -1261,7 +1319,8 @@ function normalizeRequest(input) {
     trustedMemberApprovedAt: nonEmptyString(input.trustedMemberApprovedAt),
     trustedMemberEffectiveFrom: nonEmptyString(input.trustedMemberEffectiveFrom),
     replyInThread: input.replyInThread === true,
-    presentationMode: input.presentationMode === "streaming-post" ? "streaming-post" : "card",
+    presentationMode: ["streaming-post", "streaming-body"].includes(input.presentationMode) ? input.presentationMode : "card",
+    presentationMigration: normalizePresentationMigration(input),
     ...(input.threadReplyPolicyVersion === 1 ? {
       threadReplyPolicyVersion: 1,
       threadFallbackCode: [230071, 230072].includes(input.threadFallbackCode) ? input.threadFallbackCode : null,
@@ -1322,7 +1381,8 @@ function serializableRequest(request) {
       sourceCreateTime: request.sourceCreateTime, senderType: request.senderType, mentionedBot: request.mentionedBot,
     } : {}),
     replyInThread: request.replyInThread,
-    ...(request.presentationMode === "streaming-post" ? { presentationMode: "streaming-post" } : {}),
+    ...(isStreamingPresentation(request) ? { presentationMode: request.presentationMode } : {}),
+    ...(request.presentationMigration ? { presentationMigration: request.presentationMigration } : {}),
     ...(request.threadReplyPolicyVersion === 1 ? {
       threadReplyPolicyVersion: 1, threadFallbackCode: request.threadFallbackCode ?? null,
     } : {}),
@@ -1422,7 +1482,7 @@ function buildForwardPrompt(request, msg, attachments, { promptInstructions = []
   if (rejectedCount > 0) {
     sections.push(`Attachment note: ${rejectedCount} attachment(s) could not be passed to Desktop. Do not claim to have read them.`);
   }
-  if (request.presentationMode === "streaming-post") sections.push(
+  if (isStreamingPresentation(request)) sections.push(
     "The bridge presents this request as one continuously updated rich-text reply inside the source message topic. Public progress markers update that same message, and the completed reply replaces its content with the final body. Keep meaningful progress brief and factual. Do not manually send an extra progress message or final answer through Feishu tools; use this request's exact markers so the bridge remains the sole sender.",
   );
   if (request.groupPolicyVersion === 1) sections.push(
@@ -1543,7 +1603,8 @@ function findMarkedProgress(request, turns) {
       if (item?.type !== "agentMessage" || item.phase !== "commentary" || typeof item.text !== "string") continue;
       const itemId = nonEmptyString(item.id) ?? `${turn.id}:${itemIndex}`;
       const progress = extractMarkedProgress(item.text, request.requestId);
-      if (!progress || progress.endOffset <= Math.max(baselineItems.get(itemId)?.length ?? 0, progressItems.get(itemId)?.length ?? 0)) continue;
+      if (!progress || progress.endOffset <= (baselineItems.get(itemId)?.length ?? 0) ||
+          request.progressText && progress.endOffset <= (progressItems.get(itemId)?.length ?? 0)) continue;
       candidates.push({ turnIndex, itemIndex, text: progress.text,
         metadata: { itemId, turnId: turn.id, phase: "commentary", length: progress.endOffset, markerRequestId: request.requestId } });
     }
@@ -1687,7 +1748,7 @@ function assertToolSuccess(result, tool) {
 }
 
 function progressCardBody(request, snapshot, { markerOnly = false } = {}) {
-  if (request.presentationMode === "streaming-post") {
+  if (isStreamingPresentation(request)) {
     return request.progressText || (snapshot ? "正在处理…" : "正在重新连接，已接收的请求会保留。");
   }
   const stamp = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
@@ -1703,6 +1764,35 @@ function progressCardBody(request, snapshot, { markerOnly = false } = {}) {
 
 function isReplaceDelivery(mode) {
   return mode === "normal-card-patch" || mode === "normal-post-update";
+}
+
+function isStreamingPresentation(request) {
+  return ["streaming-post", "streaming-body"].includes(request?.presentationMode);
+}
+
+function canRetryPresentationReceipt(request) {
+  const presentation = request.presentation;
+  return isStreamingPresentation(request) && Boolean(request.presentationMessageId) &&
+    presentation?.previousMessageId === request.presentationMessageId && !presentation.writeFailed &&
+    (request.presentationMode === "streaming-post" ? presentation.retryable === true : presentation.retryFailures > 0);
+}
+
+function normalizePresentationMigration(input) {
+  const value = input.presentationMigration;
+  if (value == null) return null;
+  if (value.version !== 1 || value.requestId !== input.requestId || value.sourceMessageId !== input.messageId ||
+      value.groupId !== input.chatId || !THREAD_ID_RE.test(value.threadId ?? "") ||
+      value.fromMode !== "streaming-post" || value.toMode !== "streaming-body" || input.presentationMode !== "streaming-body" ||
+      !/^om_[A-Za-z0-9_-]+$/.test(value.fromMessageId ?? "") || ![230072, 230075].includes(value.apiCode) ||
+      !["creating", "active", "uncertain"].includes(value.state) || !Number.isFinite(value.createdAt) ||
+      (value.state === "active" && (!/^om_[A-Za-z0-9_-]+$/.test(value.toMessageId ?? "") ||
+        value.toMessageId !== input.presentationMessageId || value.toMessageId === value.fromMessageId))) {
+    throw new Error("invalid-presentation-migration");
+  }
+  return { version: 1, requestId: value.requestId, sourceMessageId: value.sourceMessageId, groupId: value.groupId,
+    threadId: value.threadId, fromMode: value.fromMode, toMode: value.toMode, fromMessageId: value.fromMessageId,
+    toMessageId: value.toMessageId ?? null, state: value.state, apiCode: value.apiCode, createdAt: value.createdAt,
+    activatedAt: Number.isFinite(value.activatedAt) ? value.activatedAt : null };
 }
 
 function failureNotice(code) {

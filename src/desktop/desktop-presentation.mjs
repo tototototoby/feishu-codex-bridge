@@ -1,5 +1,6 @@
 const INITIAL_PROGRESS = "正在处理…";
 const REACTION_CLEANUP_GRACE_MS = 1_000;
+export const BODY_REPLY_ELEMENT_ID = "bridge_reply_body";
 
 /**
  * Owns one Feishu request's visible progress UI. A regular interactive card is
@@ -12,6 +13,7 @@ export class DesktopPresentation {
     chatId,
     sourceMessageId,
     replyInThread = false,
+    bodyOnly = false,
     previousReactionId,
     previousMessageId,
     onMessageId = () => {},
@@ -24,6 +26,7 @@ export class DesktopPresentation {
     this.chatId = chatId;
     this.sourceMessageId = sourceMessageId;
     this.replyInThread = replyInThread;
+    this.bodyOnly = bodyOnly === true;
     this.previousReactionId = previousReactionId;
     this.previousMessageId = previousMessageId;
     this.onMessageId = onMessageId;
@@ -73,7 +76,7 @@ export class DesktopPresentation {
   async start() {
     this.startTyping();
     const initialContent = this.latestContent;
-    const card = buildProgressCard(initialContent);
+    const card = buildProgressCard(initialContent, false, false, false, this.bodyOnly);
     try {
       if (this.previousMessageId) {
         const response = await this.channel.rawClient.im.v1.message.get({
@@ -252,7 +255,7 @@ export class DesktopPresentation {
       try {
         const response = await this.channel.rawClient.im.v1.message.patch({
           path: { message_id: this.messageId },
-          data: { content: JSON.stringify(buildProgressCard(content, completed, paused, this.finishIntent?.successTheme !== false)) },
+          data: { content: JSON.stringify(buildProgressCard(content, completed, paused, this.finishIntent?.successTheme !== false, this.bodyOnly)) },
         });
         if (!hasApiSuccessCode(response)) {
           if (isTransientRestError(response)) {
@@ -369,7 +372,7 @@ export class DesktopPresentation {
       const paused = intent.state === "paused";
       const result = await this.channel.rawClient.im.v1.message.patch({
         path: { message_id: messageId },
-        data: { content: JSON.stringify(buildProgressCard(intent.content, completed, paused, intent.successTheme)) },
+        data: { content: JSON.stringify(buildProgressCard(intent.content, completed, paused, intent.successTheme, this.bodyOnly)) },
       });
       if (!hasApiSuccessCode(result)) {
         this.reportError("card-final-recovery", "failed", numericFailureDetails(result));
@@ -441,9 +444,24 @@ export class DesktopPresentation {
   }
 }
 
-function buildProgressCard(content, completed = false, paused = false, successTheme = completed) {
-  const theme = completed && !paused && successTheme ? "green" : "blue";
+function buildProgressCard(content, completed = false, paused = false, successTheme = completed, bodyOnly = false) {
   const visibleContent = normalizeProgressContent(content);
+  if (bodyOnly) {
+    return {
+      schema: "2.0",
+      config: { update_multi: true, width_mode: "default" },
+      body: {
+        direction: "vertical",
+        padding: "12px 12px 12px 12px",
+        elements: [{
+          tag: "markdown",
+          element_id: BODY_REPLY_ELEMENT_ID,
+          content: visibleContent,
+        }],
+      },
+    };
+  }
+  const theme = completed && !paused && successTheme ? "green" : "blue";
   const notice = completed && !paused && !successTheme;
   const title = paused ? "任务已暂停" : notice ? "连接提示" : completed ? "任务回复" : "桌面任务进度";
   return {
@@ -519,8 +537,15 @@ function isOwnedProgressCard(response, messageId, presentation) {
       !presentation.channel.opts.appId || sender?.id !== presentation.channel.opts.appId) return false;
   try {
     const card = JSON.parse(message.body?.content ?? "null");
-    return card?.schema === "2.0" && card?.config?.streaming_mode !== true &&
-      ["桌面任务进度", "任务回复", "任务已暂停", "连接提示"].includes(card?.header?.title?.content);
+    if (card?.schema !== "2.0" || card?.config?.streaming_mode === true) return false;
+    if (presentation.bodyOnly) {
+      const elements = card?.body?.elements;
+      const element = elements?.[0];
+      return !card.header && Array.isArray(elements) && elements.length === 1 &&
+        element?.tag === "markdown" && element.element_id === BODY_REPLY_ELEMENT_ID &&
+        typeof element.content === "string" && element.content.trim().length > 0;
+    }
+    return ["桌面任务进度", "任务回复", "任务已暂停", "连接提示"].includes(card?.header?.title?.content);
   } catch {
     return false;
   }

@@ -324,10 +324,11 @@ group and native chat.
 ### Updating rich-text replies
 
 A group Desktop control can opt new requests into `presentationMode:
-"streaming-post"`. Each new request creates one rich-text reply in the source
-message's topic, updates that same message as public progress arrives, and
-replaces its content with the final answer. The final message remains ordinary
-rich text, without a task-card header or a second final-answer message.
+"streaming-body"`. Each new request creates one headerless Card 2.0 reply in
+the source message's topic. It shows only Markdown body content, updates that
+same message as public progress arrives, and replaces its content with the
+final answer. There is no task-card header, colored status panel or second
+final-answer message. Its underlying message type remains `interactive`.
 Updates follow the monitor's roughly five-second interval; this is not a
 token-by-token stream. Existing completion mentions stay enabled and, for
 this mode, are sent inside the same topic.
@@ -335,9 +336,18 @@ this mode, are sent inside the same topic.
 The request stores its presentation mode and message receipt. Existing card
 requests retain their original presentation after a configuration change.
 An uncertain initial create is never repeated. Resume verifies the saved
-message's sender, group, source and post type before updating it; safe retries
+message's sender, group, source, card type and body marker before updating it; safe retries
 replace only that same message. Topic rejection does not fall back to a group
 timeline message. Generated images and files retain the existing media outbox.
+
+The earlier `streaming-post` approach uses the ordinary message editing API,
+which is limited to 20 edits and a tenant-admin-defined editing window. It is
+not suitable for long tasks. A pending legacy post can move to one new body
+card only after the platform explicitly returns `230072` or `230075`. The
+migration intent is persisted before creating the replacement in the same
+topic; its new receipt becomes canonical in the same state write. Unknown
+creates are never repeated. The old message remains as history and the task
+itself is not replayed. Existing card requests keep their original format.
 
 ### Oversized native turns
 
@@ -351,9 +361,11 @@ The compatibility reader verifies the session ID and regular local path,
 rejects symbolic links and ambiguous files, and accepts only public assistant
 messages with complete request-specific markers. It never returns reasoning,
 tool output, user messages or text outside those envelopes. Reads are bounded,
-streamed and cached by file identity and offset. It does not edit sessions or
-recover terminal/uncertain requests. If the local format changes, the file is
-unavailable or its scan budget is exceeded, delivery remains unconfirmed.
+streamed and cached by file identity and offset. A large cold file is read
+across bounded calls; no candidate is returned before catching up with its
+current snapshot. It does not edit sessions or recover terminal/uncertain
+requests. If the local format changes or the file is unavailable, delivery
+remains unconfirmed.
 
 For multiple complete envelopes belonging to the same request, the latest
 public message in the newest turn takes precedence. This lets a correction replace

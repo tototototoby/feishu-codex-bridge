@@ -197,15 +197,16 @@ function acceptLine(state, bytes, position, threadId, requests) {
 }
 
 async function scan(handle, state, size, threadId, requests) {
-  if (size - state.offset > MAX_SCAN_BYTES) throw failure("rollout-file-budget-exceeded");
+  // One invocation is bounded; a large cold rollout is resumed on later calls.
+  const endPosition = Math.min(size, state.offset + MAX_SCAN_BYTES);
   const chunk = Buffer.allocUnsafe(64 * 1024);
   let position = state.offset;
   let lineStart = position;
   let pieces = [];
   let length = 0;
   let dropping = state.skippingLongLine;
-  while (position < size) {
-    const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, size - position), position);
+  while (position < endPosition) {
+    const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, endPosition - position), position);
     if (!bytesRead) throw failure("rollout-file-changed");
     let start = 0;
     while (start < bytesRead) {
@@ -234,8 +235,9 @@ async function scan(handle, state, size, threadId, requests) {
   }
   // Ordinary partial JSON is reread next time without caching its contents.
   // Oversized partial lines can be discarded incrementally until their newline.
-  state.offset = dropping ? size : lineStart;
+  state.offset = dropping ? endPosition : lineStart;
   state.skippingLongLine = dropping;
+  return endPosition === size;
 }
 
 /** Read only exact pending-request marker envelopes from one local rollout. */
@@ -279,18 +281,24 @@ export async function readRolloutMarkers({ threadId, requests, codexHome } = {})
       matches: new Map([...previous.matches].map(([id, items]) => [id, [...items]])),
     } : { path, identity, signature, offset: 0, skippingLongLine: false, confirmed: false,
       turnId: null, startedAt: null, matches: new Map() };
-    await scan(handle, state, stat.size, threadId, eligible);
+    const caughtUp = await scan(handle, state, stat.size, threadId, eligible);
     const after = await handle.stat();
     if (after.size < stat.size || after.ino !== stat.ino || after.dev !== stat.dev ||
         (after.size === stat.size && after.mtimeMs !== stat.mtimeMs)) throw failure("rollout-file-changed");
     const finalPath = await checkedPath(path, false);
     if (finalPath.stat.dev !== stat.dev || finalPath.stat.ino !== stat.ino) throw failure("rollout-file-changed");
+    if (finalPath.stat.size < stat.size ||
+        (finalPath.stat.size === stat.size && finalPath.stat.mtimeMs !== stat.mtimeMs)) throw failure("rollout-file-changed");
     state.size = stat.size;
     state.mtimeMs = stat.mtimeMs;
     cache.delete(key);
+    if (!state.confirmed) return null;
     cache.set(key, state);
     while (cache.size > 4) cache.delete(cache.keys().next().value);
-    if (!state.confirmed) return null;
+    // Never expose an earlier match before the remaining snapshot (or an append
+    // observed during this scan) has been checked for a newer closure.
+    if (!caughtUp || state.offset !== stat.size || state.skippingLongLine ||
+        after.size !== stat.size || finalPath.stat.size !== stat.size) return null;
     const turns = new Map();
     const items = [...state.matches.values()].flat().sort((a, b) => {
       const position = (entry) => Number(entry.item.id.split(":")[2]);
