@@ -620,7 +620,7 @@ export class DesktopDispatcher {
           includeOutputs: false,
           maxOutputCharsPerItem: MAX_OUTPUT_CHARS,
         },
-        { timeoutMs: MCP_CALL_TIMEOUT_MS },
+        { timeoutMs: 45_000, deadlineAt: Date.now() + 90_000 },
       );
       assertToolSuccess(baselineResult, "read_thread");
       const baseline = threadSnapshot(baselineResult);
@@ -747,8 +747,17 @@ export class DesktopDispatcher {
     if (this.scope !== configuredDesktopChatId() && !input.cursor && input.turnLimit > 1) {
       return this.readPagedDesktopThread(input, options);
     }
+    const read = () => beforeReadDeadline(() => {
+      const { deadlineAt, ...rpcOptions } = options ?? {};
+      if (Number.isFinite(deadlineAt)) {
+        const remaining = deadlineAt - Date.now();
+        if (remaining <= 0) throw new RelayError("timeout");
+        rpcOptions.timeoutMs = Math.min(rpcOptions.timeoutMs ?? MCP_CALL_TIMEOUT_MS, remaining);
+      }
+      return this.getClient().readThread(input, rpcOptions);
+    }, options?.deadlineAt);
     try {
-      const result = await this.getClient().readThread(input, options);
+      const result = await read();
       if (isOversizedHistoryResult(result)) this.rolloutFallbackNeeded = true;
       assertToolSuccess(result, "read_thread");
       const snapshot = threadSnapshot(result);
@@ -758,8 +767,11 @@ export class DesktopDispatcher {
       if (!input.cursor && input.turnLimit > 1 && /mcp error -32000/i.test(String(error?.message ?? ""))) {
         return this.readPagedDesktopThread(input, options);
       }
-      if (!["pipe-unavailable", "server-unavailable", "timeout"].includes(classifyError(error)) || !await this.recoverConnection()) throw error;
-      const result = await this.getClient().readThread(input, options);
+      if (!["pipe-unavailable", "server-unavailable", "timeout"].includes(classifyError(error))) throw error;
+      // Discovery has a 20s budget; do not start it without that time left.
+      if (Number.isFinite(options?.deadlineAt) && options.deadlineAt - Date.now() < 20_000) throw new RelayError("timeout");
+      if (!await beforeReadDeadline(() => this.recoverConnection(), options?.deadlineAt)) throw error;
+      const result = await read();
       if (isOversizedHistoryResult(result)) this.rolloutFallbackNeeded = true;
       assertToolSuccess(result, "read_thread");
       const snapshot = threadSnapshot(result);
@@ -1492,6 +1504,21 @@ function buildForwardPrompt(request, msg, attachments, { promptInstructions = []
     `When you provide the complete answer to this Feishu request, include it between these exact markers in your final answer; ${request.groupPolicyVersion === 1 ? "use the separate feishu-progress markers above for ordinary public progress updates." : "use public commentary only when the request asks for a quick receipt or steering confirmation, not for ordinary progress updates."} Keep the answer concise and self-contained.\n<!-- feishu-reply:${request.requestId}:start -->\n...\n<!-- feishu-reply:${request.requestId}:end -->`,
   );
   return sections.join("\n\n");
+}
+
+async function beforeReadDeadline(action, deadlineAt) {
+  if (!Number.isFinite(deadlineAt)) return action();
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new RelayError("timeout");
+  let timer;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(action),
+      new Promise((_, reject) => { timer = setTimeout(() => reject(new RelayError("timeout")), remaining); }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function isOversizedHistoryResult(result) {
